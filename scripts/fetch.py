@@ -6,6 +6,7 @@ SPOTS = {
     "razo":         (43.2917, -8.7950),
     "bastiagueiro": (43.3483, -8.3000),
     "san_xurxo":    (43.5217, -8.3433),
+    "caion":        (43.3151, -8.6101),
 }
 
 WAVE_MODELS = "ecmwf_wam,gfs_wave025,dwd_ewam,meteofrance_wave"
