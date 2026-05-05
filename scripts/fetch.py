@@ -1,7 +1,7 @@
-import requests, json, datetime, pathlib, re
+import requests, json, datetime, pathlib, re, time
 from bs4 import BeautifulSoup
 
-# ─── Spots: name → (latitude, longitude) ───────────────────────────────
+# ─── Spots ─────────────────────────────────────────────────────────────
 SPOTS = {
     "pantin":       (43.6413, -8.1137),
     "doninos":      (43.5183, -8.3367),
@@ -11,8 +11,6 @@ SPOTS = {
     "caion":        (43.3151, -8.6101),
 }
 
-# ─── Wisuki id and slug for each spot, used for tide scraping ──────────
-# If a spot doesn't exist on Wisuki, set to (None, None) and tides skip.
 WISUKI = {
     "pantin":       (7394, "pantn"),
     "doninos":      (2775, "donios"),
@@ -22,7 +20,6 @@ WISUKI = {
     "caion":        (6767, "cain"),
 }
 
-# ─── Open-Meteo model selection (rarely needs to change) ───────────────
 WAVE_MODELS = "ewam,ncep_gfswave025,meteofrance_wave"
 WIND_MODELS = "best_match,ecmwf_ifs025,gfs_seamless"
 
@@ -30,24 +27,19 @@ WIND_MODELS = "best_match,ecmwf_ifs025,gfs_seamless"
 TIDE_RE = re.compile(r"([▼▲])\s*(\d{2}:\d{2})\s*([\d.]+)\s*m\s*(\d+)")
 
 def fetch_wisuki_tides(wisuki_id, slug, n_days=7):
-    """Scrape Wisuki tide page for a spot. Returns list of daily dicts."""
     url = f"https://wisuki.com/tide/{wisuki_id}/{slug}"
     html = requests.get(
-        url,
-        timeout=30,
+        url, timeout=30,
         headers={"User-Agent": "surf-forecast-bot/1.0"},
         allow_redirects=True,
     ).text
     soup = BeautifulSoup(html, "html.parser")
-
-    # Pull the reference station name (e.g. "Tide from Cedeira (4.72km from Pantín)")
     ref_station = None
     for s in soup.find_all(string=re.compile(r"Tide from")):
         m = re.search(r"Tide from ([^(]+)\(", s)
         if m:
             ref_station = m.group(1).strip()
             break
-
     days = []
     for row in soup.find_all("tr"):
         cells = row.find_all("td")
@@ -58,7 +50,7 @@ def fetch_wisuki_tides(wisuki_id, slug, n_days=7):
         if not date_match:
             continue
         day_tides = []
-        for cell in cells[1:5]:  # 1st through 4th tide of the day
+        for cell in cells[1:5]:
             text = cell.get_text(" ", strip=True)
             m = TIDE_RE.search(text)
             if not m:
@@ -79,6 +71,21 @@ def fetch_wisuki_tides(wisuki_id, slug, n_days=7):
             break
     return days
 
+# ─── Resilient HTTP helper for Open-Meteo ──────────────────────────────
+def fetch_with_retry(url, params, timeout=60, retries=2, retry_delay=5):
+    """GET with timeout retries. Returns parsed JSON or error dict."""
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            return requests.get(url, params=params, timeout=timeout).json()
+        except requests.exceptions.Timeout:
+            last_err = f"Timeout after {timeout}s (attempt {attempt + 1}/{retries + 1})"
+            if attempt < retries:
+                time.sleep(retry_delay)
+        except Exception as e:
+            return {"error": str(e)}
+    return {"error": last_err}
+
 # ─── Main pull loop ────────────────────────────────────────────────────
 bundle = {
     "generated_at": datetime.datetime.now(datetime.UTC).isoformat(),
@@ -86,32 +93,27 @@ bundle = {
 }
 
 for name, (lat, lon) in SPOTS.items():
-    # Waves (Open-Meteo marine API, multi-model)
-    try:
-        waves = requests.get("https://marine-api.open-meteo.com/v1/marine", params={
+    waves = fetch_with_retry(
+        "https://marine-api.open-meteo.com/v1/marine",
+        {
             "latitude": lat, "longitude": lon,
             "hourly": "wave_height,wave_direction,wave_period,"
                       "swell_wave_height,swell_wave_direction,swell_wave_period",
             "models": WAVE_MODELS,
             "timezone": "Europe/Madrid",
             "forecast_days": 3,
-        }, timeout=30).json()
-    except Exception as e:
-        waves = {"error": str(e)}
-
-    # Wind (Open-Meteo standard API, multi-model)
-    try:
-        wind = requests.get("https://api.open-meteo.com/v1/forecast", params={
+        },
+    )
+    wind = fetch_with_retry(
+        "https://api.open-meteo.com/v1/forecast",
+        {
             "latitude": lat, "longitude": lon,
             "hourly": "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
             "models": WIND_MODELS,
             "timezone": "Europe/Madrid",
             "forecast_days": 3,
-        }, timeout=30).json()
-    except Exception as e:
-        wind = {"error": str(e)}
-
-    # Tide (Wisuki HTML scrape)
+        },
+    )
     wid, slug = WISUKI.get(name, (None, None))
     if wid:
         try:
@@ -125,6 +127,8 @@ for name, (lat, lon) in SPOTS.items():
         "lat": lat, "lon": lon,
         "waves": waves, "wind": wind, "tide": tide,
     }
+    # Friendly pause between spots
+    time.sleep(1.5)
 
 # ─── Write outputs ─────────────────────────────────────────────────────
 pathlib.Path("today.json").write_text(json.dumps(bundle, indent=2))
@@ -133,8 +137,8 @@ pathlib.Path("archive").mkdir(exist_ok=True)
 pathlib.Path(f"archive/{date_str}.json").write_text(json.dumps(bundle, indent=2))
 
 n_total = len(bundle["spots"])
-n_with_tide = sum(
-    1 for s in bundle["spots"].values()
-    if isinstance(s["tide"], list) and s["tide"]
-)
-print(f"Wrote forecast for {n_total} spots, {n_with_tide} with tide data")
+n_waves = sum(1 for s in bundle["spots"].values() if "error" not in s["waves"])
+n_wind = sum(1 for s in bundle["spots"].values() if "error" not in s["wind"])
+n_tide = sum(1 for s in bundle["spots"].values() if isinstance(s["tide"], list) and s["tide"])
+print(f"Wrote forecast for {n_total} spots: "
+      f"{n_waves} with waves, {n_wind} with wind, {n_tide} with tide")
