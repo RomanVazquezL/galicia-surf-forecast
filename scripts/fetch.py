@@ -23,7 +23,7 @@ WISUKI = {
 }
 
 # ─── Open-Meteo model selection (rarely needs to change) ───────────────
-WAVE_MODELS = "ecmwf_wam,gfs_wave025,dwd_ewam,meteofrance_wave"
+WAVE_MODELS = "ewam,ncep_gfswave025,meteofrance_wave"
 WIND_MODELS = "best_match,ecmwf_ifs025,gfs_seamless"
 
 # ─── Wisuki tide scraper ───────────────────────────────────────────────
