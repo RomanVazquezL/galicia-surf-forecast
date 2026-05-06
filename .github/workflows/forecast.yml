@@ -1,8 +1,8 @@
 name: Daily surf forecast pull
 on:
   schedule:
-    - cron: '30 6 * * *'   
-    - cron: '30 12 * * *'
+    - cron: '27 5 * * *'
+    - cron: '47 13 * * *'
   workflow_dispatch:
 jobs:
   fetch:
