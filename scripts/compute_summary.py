@@ -47,6 +47,22 @@ def kmh_to_kt(v):
     return v / 1.852
 
 
+def round_floats(obj, ndigits=2):
+    """Recursively round all float values in a JSON-shaped structure.
+
+    Trims float-precision noise that bloats file size without adding meaning
+    (model means converge to the second decimal at best). Keeps Nones, ints,
+    strings, lists, and dicts intact.
+    """
+    if isinstance(obj, float):
+        return round(obj, ndigits)
+    if isinstance(obj, dict):
+        return {k: round_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [round_floats(v, ndigits) for v in obj]
+    return obj
+
+
 def circular_mean(degs):
     """Mean of bearings in degrees via atan2(sum sin, sum cos). Returns None if empty."""
     valid = [d for d in degs if d is not None]
@@ -473,6 +489,8 @@ def main():
 
     for name, spot in bundle.get("spots", {}).items():
         summary["spots"][name] = process_spot(name, spot)
+
+    summary = round_floats(summary, ndigits=2)
 
     Path(args.out).write_text(json.dumps(summary, separators=(",", ":")), encoding="utf-8")
 
