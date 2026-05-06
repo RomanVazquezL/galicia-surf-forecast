@@ -474,14 +474,14 @@ def main():
     for name, spot in bundle.get("spots", {}).items():
         summary["spots"][name] = process_spot(name, spot)
 
-    Path(args.out).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    Path(args.out).write_text(json.dumps(summary, separators=(",", ":")), encoding="utf-8")
 
     if not args.no_archive:
         archive_dir = Path("archive_summary")
         archive_dir.mkdir(exist_ok=True)
         date_str = datetime.now(timezone.utc).date().isoformat()
         (archive_dir / f"{date_str}.json").write_text(
-            json.dumps(summary, indent=2), encoding="utf-8"
+            json.dumps(summary, separators=(",", ":")), encoding="utf-8"
         )
 
     n_spots = len(summary["spots"])

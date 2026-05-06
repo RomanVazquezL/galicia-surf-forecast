@@ -91,21 +91,11 @@ In practice most spots have **2 useful wave models**, not 3. Esteiro de Xove has
 
 `web_fetch` the summary URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json?d={YYYY-MM-DD}`, where `{YYYY-MM-DD}` is today's UTC date (e.g. `?d=2026-05-06`). The dated suffix is a cache-buster — see The summary file section above for why this matters.
 
+**Precondition for trustworthy fetch:** the summary URL must be present in this project's custom instructions (under `<sources_in_this_project>`) so claude.ai treats it as user-provided context for `web_fetch`. Without that, fresh sessions return `PERMISSIONS_ERROR` and this skill falls back per the failure rule below.
+
+**Never** prompt the user to paste the URL back. If `web_fetch` fails, fall back silently.
+
 Branch on the result:
-
-**If `web_fetch` returns `PERMISSIONS_ERROR`** — the URL doesn't have provenance in this session yet. The URL is hardcoded in this skill file, but skill files are system context, not user context, so the provenance check fails when no user turn or prior search/fetch result has surfaced this URL. *Do not fall back to `daily-surf-briefing` yet — try the provenance-grant first.*
-
-Send the user exactly this message and stop the turn:
-
-> Quick — to fetch the multi-model summary I need provenance for the URL. Paste this back to me, then I'll run the briefing:
->
-> `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json?d={YYYY-MM-DD}`
->
-> (Substitute today's UTC date for `{YYYY-MM-DD}` — e.g. `?d=2026-05-06`.)
-
-On the user's next turn (which will contain the URL), retry `web_fetch`. From this point, treat any further failure normally per the rules below.
-
-(Note: if the URL is in the project's custom instructions and Anthropic treats project instructions as user-provided context, this provenance step never fires — the first `web_fetch` will succeed. Don't assume it will, though; the failure path needs to work either way.)
 
 **If `web_fetch` succeeds**, parse JSON. Read `source_bundle_at` (NOT `generated_at` — `generated_at` is when the summary script ran; `source_bundle_at` is when the underlying forecast was pulled, which is the actual data freshness). Three cases:
 
@@ -113,9 +103,7 @@ On the user's next turn (which will contain the URL), retry `web_fetch`. From th
 - **24–30 hours old** → fresh-ish (Actions probably ran but slightly late). Proceed but note in the footnote.
 - **More than 30 hours old** → stale. The cron likely failed. Tell the user briefly ("summary is stale, falling back to direct fetch"), then follow the workflow in `/mnt/skills/user/daily-surf-briefing/SKILL.md` instead. Stop running this skill.
 
-**If `web_fetch` errors with 404, network error, or any other non-`PERMISSIONS_ERROR` failure** → summary is unavailable. Brief note to user ("summary is unreachable, falling back to direct fetch"), then `daily-surf-briefing`.
-
-**If `web_fetch` returns `PERMISSIONS_ERROR` a second time after the user pasted the URL** → something deeper is wrong. Note this honestly, then fall back to `daily-surf-briefing`.
+**If `web_fetch` fails for any reason** — `PERMISSIONS_ERROR`, 404, network error, JSON parse error, anything — fall back silently to `daily-surf-briefing`. One short line in your reply: `Multi-model summary unreachable, using direct fetch.` Then follow `/mnt/skills/user/daily-surf-briefing/SKILL.md`. Do not stop the turn, do not prompt for the URL, do not retry. The user can fix provenance by adding the URL to project instructions; that's their responsibility, not mid-skill recovery work.
 
 ### Step 2 — Load the Galicia Surf Spot Guide
 
