@@ -18,6 +18,8 @@ WISUKI = {
     "razo":         (2782, "razo"),
     "bastiagueiro": (6759, "bastiagueiro"),
     "caion":        (6767, "cain"),
+    "larino":       (6078, "muros"),     # Muros tide station, ~10 km away
+    "esteiro_xove": (6070, "foz"),       # Foz tide station, ~20 km west
 }
 
 WAVE_MODELS = "ewam,ncep_gfswave025,meteofrance_wave"
@@ -73,21 +75,30 @@ def fetch_wisuki_tides(wisuki_id, slug, n_days=7):
 
 # ─── Resilient HTTP helper for Open-Meteo ──────────────────────────────
 def fetch_with_retry(url, params, timeout=60, retries=2, retry_delay=5):
-    """GET with timeout retries. Returns parsed JSON or error dict."""
+    """GET with retries on transient errors. Returns parsed JSON or {"error": ...}."""
     last_err = None
     for attempt in range(retries + 1):
         try:
-            return requests.get(url, params=params, timeout=timeout).json()
-        except requests.exceptions.Timeout:
-            last_err = f"Timeout after {timeout}s (attempt {attempt + 1}/{retries + 1})"
+            r = requests.get(url, params=params, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except (requests.exceptions.RequestException, ValueError) as e:
+            last_err = f"{type(e).__name__}: {e} (attempt {attempt + 1}/{retries + 1})"
             if attempt < retries:
                 time.sleep(retry_delay)
-        except Exception as e:
-            return {"error": str(e)}
     return {"error": last_err}
+
+
+def _model_ok(waves_response, suffix):
+    """A wave model is OK if it returned non-zero, non-null data."""
+    if "error" in waves_response:
+        return False
+    arr = waves_response.get("hourly", {}).get(f"wave_height_{suffix}", [])
+    return any(v not in (None, 0, 0.0) for v in arr)
 
 # ─── Main pull loop ────────────────────────────────────────────────────
 bundle = {
+    "schema_version": 2,
     "generated_at": datetime.datetime.now(datetime.UTC).isoformat(),
     "spots": {},
 }
@@ -115,18 +126,30 @@ for name, (lat, lon) in SPOTS.items():
         },
     )
     wid, slug = WISUKI.get(name, (None, None))
+    tide, tide_error = [], None
     if wid:
         try:
-            tide = fetch_wisuki_tides(wid, slug)
+            tide = fetch_wisuki_tides(wid, slug) or []
         except Exception as e:
-            tide = {"error": str(e)}
+            tide_error = f"{type(e).__name__}: {e}"
     else:
-        tide = None
+        tide_error = "no_wisuki_mapping"
 
-    bundle["spots"][name] = {
+    spot_entry = {
         "lat": lat, "lon": lon,
         "waves": waves, "wind": wind, "tide": tide,
     }
+    if tide_error:
+        spot_entry["tide_error"] = tide_error
+    spot_entry["_meta"] = {
+        "waves_ok":   "error" not in waves,
+        "wind_ok":    "error" not in wind,
+        "tide_ok":    len(tide) > 0,
+        "ewam_ok":    _model_ok(waves, "ewam"),
+        "gfswave_ok": _model_ok(waves, "ncep_gfswave025"),
+        "mfwam_ok":   _model_ok(waves, "meteofrance_wave"),
+    }
+    bundle["spots"][name] = spot_entry
     # Friendly pause between spots
     time.sleep(1.5)
 
@@ -139,6 +162,14 @@ pathlib.Path(f"archive/{date_str}.json").write_text(json.dumps(bundle, indent=2)
 n_total = len(bundle["spots"])
 n_waves = sum(1 for s in bundle["spots"].values() if "error" not in s["waves"])
 n_wind = sum(1 for s in bundle["spots"].values() if "error" not in s["wind"])
-n_tide = sum(1 for s in bundle["spots"].values() if isinstance(s["tide"], list) and s["tide"])
+n_tide = sum(1 for s in bundle["spots"].values() if len(s["tide"]) > 0)
 print(f"Wrote forecast for {n_total} spots: "
       f"{n_waves} with waves, {n_wind} with wind, {n_tide} with tide")
+for name, s in bundle["spots"].items():
+    m = s["_meta"]
+    print(f"  {name}: waves={'OK' if m['waves_ok'] else 'ERR'}, "
+          f"wind={'OK' if m['wind_ok'] else 'ERR'}, "
+          f"tide={'OK' if m['tide_ok'] else 'MISS'}, "
+          f"ewam={'OK' if m['ewam_ok'] else 'NA'}, "
+          f"gfswave={'OK' if m['gfswave_ok'] else 'NA'}, "
+          f"mfwam={'OK' if m['mfwam_ok'] else 'NA'}")
