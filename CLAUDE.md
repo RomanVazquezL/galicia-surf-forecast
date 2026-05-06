@@ -39,7 +39,7 @@ Each spot entry has:
 - `lat`, `lon` — coordinates.
 - `waves`, `wind` — raw Open-Meteo responses with model-suffixed field names (e.g. `wave_height_ewam`). On error, the value is `{"error": "..."}`.
 - `tide` — **always a list** (empty `[]` when missing or unmapped). Each item: `date`, `reference_station`, `tides[]` (list of `{type, time, height_m, coefficient}`).
-- `tide_error` — string, present **only** when tide retrieval failed or the spot has no Wisuki mapping (`"no_wisuki_mapping"`). Sibling of `tide`, not nested inside it.
+- `tide_error` — string, present **only** when `tide` is empty due to a problem. Values: `"no_wisuki_mapping"` (no Wisuki ID configured for the spot), `"empty_scrape"` (Wisuki returned no parseable rows — likely an upstream HTML change), or `"<ExceptionClass>: <message>"` for raised exceptions. Sibling of `tide`, not nested inside it.
 - `_meta` — data-quality flags: `waves_ok`, `wind_ok`, `tide_ok`, plus per-wave-model flags `ewam_ok`, `gfswave_ok`, `mfwam_ok`. A model flag is `false` if the response errored or returned all null/zero values.
 
 Public bundle URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json`
@@ -61,7 +61,7 @@ Downstream consumers append a daily cache-buster query string (e.g. `?d=2026-05-
 ## Running locally
 
 ```bash
-pip install requests beautifulsoup4
+pip install -r requirements.txt
 python scripts/fetch.py
 ```
 

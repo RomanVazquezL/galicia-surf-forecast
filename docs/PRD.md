@@ -163,5 +163,5 @@ The system captures founder session logs from day one to seed the long-term spot
 - **Named spot** — A specific break inside a spot-area (e.g. Razo's "Cordobés" peak). Surfaced as progressive disclosure inside the spot-area card.
 - **Bundle** — The daily JSON file produced by FR1 containing forecast data for every monitored spot.
 - **Knowledge base** — The structured + narrative per-spot information that the interpretation layer (FR2) consumes alongside the bundle.
-- **Cape spot** — A surf spot near a headland (e.g. Pantín, Doniños, San Xurxo near Cabo Prior) where wind direction/strength can differ meaningfully from coarse model output. Higher-resolution wind models matter more here.
+- **Cape spot** — A surf spot near a headland (e.g. Pantín, Doniños, San Xurxo near Cabo Prior; San Xurxo is not currently in the bundle) where wind direction/strength can differ meaningfully from coarse model output. Higher-resolution wind models matter more here.
 - **Deterministic preprocessing** — Code that turns numeric forecast inputs into binary or categorical signals (wind-offshore? tide-in-window? size-in-range?) before they reach the LLM judgment layer.

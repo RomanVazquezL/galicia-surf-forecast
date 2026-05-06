@@ -130,6 +130,8 @@ for name, (lat, lon) in SPOTS.items():
     if wid:
         try:
             tide = fetch_wisuki_tides(wid, slug) or []
+            if not tide:
+                tide_error = "empty_scrape"
         except Exception as e:
             tide_error = f"{type(e).__name__}: {e}"
     else:
