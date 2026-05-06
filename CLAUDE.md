@@ -46,6 +46,12 @@ Public bundle URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf
 
 Downstream consumers append a daily cache-buster query string (e.g. `?d=2026-05-06`) to bypass aggressive caching layers. GitHub ignores the query string and serves the same file; the suffix just acts as a cache key for any CDN or HTTP cache between the consumer and `raw.githubusercontent.com`.
 
+### `today_summary.json` — derived per-window summary
+
+`today_summary.json` (with per-day history in `archive_summary/`) is produced by `scripts/compute_summary.py` after each `fetch.py` run. Independent versioning: its own `schema_version: 1`, separate from the bundle's. Top-level keys: `generated_at`, `source_bundle_at` (the bundle's `generated_at`), `windows` (definitions of `morning`/`afternoon`/`full_day` as local-time hour ranges), `thresholds` (script constants echoed for self-describing output), and `spots`. Per spot per day, the file emits two parallel views: hourly arrays (24 model-aggregated values per field for `{mean, spread}`) AND per-window summaries that aggregate over hours within the window — same field set, plus a categorical `agreement` label (`high`/`medium`/`low`/`single_model`/`n/a`) per field derived from spread vs threshold. Wave-model selection respects `_meta` flags from the bundle (drops models flagged as zero/null on a spot-by-spot basis). Wind speed and gusts pre-converted to knots (km/h ÷ 1.852). Direction uses circular mean (atan2 of unit vectors), spread = max angular distance from circular mean, capped at 180°. Imperial conversion is NOT done in this file — that stays in the consumer.
+
+Public summary URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json`
+
 ## Spots
 
 `pantin`, `doninos`, `razo`, `bastiagueiro`, `caion`, `larino`, `esteiro_xove`. Coordinates and Wisuki IDs are at the top of `scripts/fetch.py`.
@@ -71,4 +77,4 @@ If Python isn't installed locally, use GitHub Actions as the test loop: edit →
 
 ## What this repo does NOT contain
 
-The consuming skill (`multi-model-surf-briefing`) lives elsewhere. Don't add briefing logic, surf decision rules, or visualization here. This repo is data pipeline only.
+Briefing logic still executes in claude.ai. This repo hosts the data pipeline (`scripts/`) AND the source-of-truth for the consuming skill body (`skills/multi-model-surf-briefing/SKILL.md`), version-controlled here so the skill stays in sync with bundle-shape changes. Don't add per-spot guide knowledge, board-pick judgment, or rendering logic in `scripts/` — that's skill territory.

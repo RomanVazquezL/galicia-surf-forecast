@@ -14,6 +14,8 @@ Public URL: <https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-foreca
 
 Per-day immutable copies live in `archive/YYYY-MM-DD.json`.
 
+Companion URL with pre-computed values: `today_summary.json` (same repo, same workflow run). See [CLAUDE.md](CLAUDE.md#schema) for the schema.
+
 ## Spots
 
 `pantin`, `doninos`, `razo`, `bastiagueiro`, `caion`, `larino`, `esteiro_xove`.
@@ -33,6 +35,7 @@ Writes `today.json` and `archive/YYYY-MM-DD.json` to the current directory.
 
 - Working in this repo? Read [CLAUDE.md](CLAUDE.md) — architecture, data shape, and known quirks.
 - Where this fits in the larger product? Read [docs/PRD.md](docs/PRD.md).
+- The skill that consumes this data: `skills/multi-model-surf-briefing/SKILL.md` (paste into claude.ai).
 
 ## Status
 
