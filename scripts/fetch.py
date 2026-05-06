@@ -3,12 +3,13 @@ from bs4 import BeautifulSoup
 
 # ─── Spots ─────────────────────────────────────────────────────────────
 SPOTS = {
-    "pantin":       (43.6413, -8.1137),
-    "doninos":      (43.5183, -8.3367),
-    "razo":         (43.2917, -8.7950),
-    "bastiagueiro": (43.3483, -8.3000),
-    "san_xurxo":    (43.5217, -8.3433),
-    "caion":        (43.3151, -8.6101),
+    "pantin":        (43.6413, -8.1137),
+    "doninos":       (43.5183, -8.3367),
+    "razo":          (43.2917, -8.7950),
+    "bastiagueiro":  (43.3483, -8.3000),
+    "caion":         (43.3151, -8.6101),
+    "larino":        (43.0292, -9.1167),
+    "esteiro_xove":  (43.6694, -7.5944),
 }
 
 WISUKI = {
@@ -16,7 +17,6 @@ WISUKI = {
     "doninos":      (2775, "donios"),
     "razo":         (2782, "razo"),
     "bastiagueiro": (6759, "bastiagueiro"),
-    "san_xurxo":    (2786, "san-xurxo"),
     "caion":        (6767, "cain"),
 }
 
