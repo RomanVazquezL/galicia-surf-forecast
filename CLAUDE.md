@@ -8,6 +8,12 @@ A serverless data pipeline that pulls daily surf forecasts for 6 Galicia spots a
 
 The output JSON is consumed by an external Claude skill (`multi-model-surf-briefing`) that produces daily surf briefings. **The data shape is a contract with that skill** — changes to top-level keys, spot names, or the `waves`/`wind`/`tide` structure will break it.
 
+## Broader context
+
+This repo implements **FR1 (forecast ingestion) only** of a larger product vision — the Galicia Surf Decision Engine. Other functional requirements (briefing logic, knowledge base, UI, personalization, session logging) live in separate components. See [docs/PRD.md](docs/PRD.md) for the full product vision, component map, and where each FR lives today.
+
+When making changes here, stay within the FR1 scope: forecast ingestion, archival, and the JSON contract. Briefing logic, surf decision rules, and UI belong elsewhere.
+
 ## Architecture
 
 `scripts/fetch.py` is the single entry point. For each spot in the `SPOTS` dict, it:
