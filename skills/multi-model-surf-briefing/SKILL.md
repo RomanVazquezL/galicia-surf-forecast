@@ -19,13 +19,15 @@ If the user asks about NY, The Wave Bristol, or a trip location, redirect — ne
 
 ## The summary file
 
-URL pattern (hardcoded, easy to update if the username/repo changes):
+URL (hardcoded, easy to update if the username/repo changes):
 
 ```
-https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json?d={YYYY-MM-DD}
+https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json
 ```
 
-The `?d={YYYY-MM-DD}` suffix is a **cache-buster**: substitute today's UTC date. The file at GitHub is identical regardless of the query string — GitHub ignores the parameter — but downstream caches (Cloudflare/Fastly in front of GitHub, the `web_fetch` tool's internal cache, browsers) treat each dated URL as a new resource and bypass any stale copy. Without this, the skill will silently consume yesterday's summary. Always include the dated suffix when calling `web_fetch`.
+**Fetch the bare URL — do NOT append a `?d={YYYY-MM-DD}` cache-buster.** Earlier versions of this skill appended a cache-buster to defeat downstream HTTP caches (Cloudflare, web_fetch's internal cache). It was removed because claude.ai's `<sources_in_this_project>` permission layer uses **exact-string URL matching** against the project sources list — adding `?d=...` makes it a different string from the bare URL listed in project instructions, which fires `PERMISSIONS_ERROR` before the request ever reaches GitHub. Freshness is enforced by reading `source_bundle_at` inside the JSON (see Step 1), not by URL cache-busting. Worst case `web_fetch` serves a 5–15 minute stale cached copy, but `source_bundle_at` still reflects the underlying file's actual generation time, so the 24h / 30h staleness thresholds catch genuine issues.
+
+**Pass an explicit `text_content_token_limit` on the `web_fetch` call.** The summary is ~250 KB at 7 days × 7 spots × hourly arrays + windows. The default token limit on `web_fetch` truncates mid-document — typically after 2–3 spots — leaving the rest silently dropped. Use `text_content_token_limit=300000` (or higher) to ensure the full file lands in context.
 
 The raw bundle (`today.json`, same repo) is still available for ad-hoc inspection if you need to drill below the summary, but **do not re-aggregate it** — the summary already did the deterministic work.
 
@@ -89,7 +91,13 @@ In practice most spots have **2 useful wave models**, not 3. Esteiro de Xove has
 
 ### Step 1 — Fetch the summary and verify freshness
 
-`web_fetch` the summary URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json?d={YYYY-MM-DD}`, where `{YYYY-MM-DD}` is today's UTC date (e.g. `?d=2026-05-06`). The dated suffix is a cache-buster — see The summary file section above for why this matters.
+`web_fetch` the summary URL — the **bare** URL, no query string:
+
+```
+https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json
+```
+
+Pass `text_content_token_limit=300000` on the call so the full ~250 KB file isn't truncated. See **The summary file** section above for why both of those (bare URL and explicit token limit) matter.
 
 **Precondition for trustworthy fetch:** the summary URL must be present in this project's custom instructions (under `<sources_in_this_project>`) so claude.ai treats it as user-provided context for `web_fetch`. Without that, fresh sessions return `PERMISSIONS_ERROR` and this skill falls back to Tier 1.5 (raw bundle) per the rules below.
 
@@ -103,7 +111,7 @@ Branch on the result:
 
 > **Note:** with `forecast_days=7` in the bundle, a 24-hour-old summary still has 6 fresh days ahead — even if the cron missed once, day-1 through day-5 forecasts remain inside the bundle's horizon. Don't over-trigger the stale fallback for normal cron-skip cases.
 
-**If `web_fetch` returns `PERMISSIONS_ERROR`** on the summary URL — the URL isn't in this project's allowed sources. Output ONE short setup-required message and proceed to Tier 1.5 (do not stop the turn):
+**If `web_fetch` returns `PERMISSIONS_ERROR`** on the summary URL — the URL isn't in this project's allowed sources, OR you appended a query string and the exact-match permission check is rejecting it. **First, double-check you fetched the bare URL** (no `?d=...`, no other query string). If you did and it still fails, output ONE short setup-required message and proceed to Tier 1.5 (do not stop the turn):
 
 > Multi-model summary needs one-time setup. Add `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json` to `<sources_in_this_project>` in this project's custom instructions. See `docs/SKILL_SETUP.md`. Falling back to the raw bundle for now.
 
@@ -111,7 +119,7 @@ This message will fire every session that hits `PERMISSIONS_ERROR` until the use
 
 **If `web_fetch` returns 404, network error, or JSON parse error** on the summary → fall back silently to Tier 1.5. No setup message; the URL is fine, the file is just unreachable for transient reasons.
 
-**Tier 1.5 fallback — raw bundle (`today.json`).** When the summary is unreachable: `web_fetch` `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json?d={YYYY-MM-DD}` (same project, same cache-buster). If that succeeds, parse and run inline aggregation per Step 5b. The bundle's footnote MUST flag: "Multi-model summary unavailable; using on-the-fly bundle aggregation. Confidence labels approximated from cross-model spread; not pre-computed."
+**Tier 1.5 fallback — raw bundle (`today.json`).** When the summary is unreachable: `web_fetch` the **bare** bundle URL `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json` (no `?d=...` cache-buster — same exact-match permission rule applies). Pass `text_content_token_limit=300000` here too — the slim bundle is ~180 KB and gets truncated by default. If that succeeds, parse and run inline aggregation per Step 5b. The bundle's footnote MUST flag: "Multi-model summary unavailable; using on-the-fly bundle aggregation. Confidence labels approximated from cross-model spread; not pre-computed."
 
 If `today.json` is also unreachable (rare — the user typically has it in project sources), or the requested date is outside the bundle's horizon (`forecast_days` from `source_bundle_at`), proceed to Tier 2.
 
@@ -334,7 +342,8 @@ Same template as `daily-surf-briefing` Step 6. Add one extra line in the data no
 - **Active synoptic pattern + day 2+** (formerly a triangulation-required case in `daily-surf-briefing`): now handled by the agreement labels directly. If models disagree on a fast-developing system, the spread is bigger and `agreement` will read `"medium"` or `"low"`. No separate heuristic needed.
 - **Spot `tide.reference_station` is far from the spot** (e.g. Pantín tide referenced to Cedeira ~5 km away; Lariño from Muros ~10 km; Esteiro from Foz ~20 km): the timing offset is small enough to ignore for coarse windows. For tight tide windows, capture the offset and adjust by a few minutes if it matters.
 - **First skill run on a brand-new repo:** the URL may 404 if no successful Actions run has happened yet. Fall back to `daily-surf-briefing` and tell the user once. After the first successful cron, this skill takes over.
-- **Cache-buster forgotten:** if you call `web_fetch` with the bare URL (no `?d=...`), you may receive a stale cached summary. Always include the dated suffix; verify `source_bundle_at` regardless.
+- **Do NOT add a `?d=...` cache-buster.** Earlier versions of this skill appended one to defeat downstream caches. It was removed because claude.ai's `<sources_in_this_project>` permission layer uses exact-string URL matching — appending a query string fires `PERMISSIONS_ERROR` before the request reaches GitHub, even though the URL host+path matches. Freshness is enforced by reading `source_bundle_at` inside the JSON; that's unaffected by web_fetch's cache (which has a 5–15 min TTL — much smaller than the 24h staleness threshold).
+- **Default `text_content_token_limit` truncates mid-document.** Always pass an explicit `text_content_token_limit=300000` (or higher) on the `web_fetch` call. Without this, the response is clamped after ~2–3 spots and the rest of the file is silently dropped — you won't see Lariño or Esteiro de Xove.
 - **Specific-hour question:** drill into `hourly` arrays per Step 3, last bullet. The summary preserves 24-hour-per-day arrays so this works without re-fetching the raw bundle.
 
 ## Compaction rules

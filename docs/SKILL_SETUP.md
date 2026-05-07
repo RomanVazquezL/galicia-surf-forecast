@@ -249,6 +249,6 @@ run the briefing for tomorrow
 | `today_summary.json` | Primary input for the skill — pre-computed window aggregates with agreement labels | ~250 KB | Twice daily by GitHub Actions cron |
 | `today.json` | Tier 1.5 fallback — raw multi-model bundle, skill aggregates inline | ~180 KB | Same workflow run |
 
-Both fetch with a `?d={YYYY-MM-DD}` cache-buster appended by the skill so downstream caches don't serve stale copies.
+Both fetch the bare URL — no `?d=...` cache-buster. claude.ai's `<sources_in_this_project>` permission check uses exact-string URL matching, so appending a query string fires `PERMISSIONS_ERROR` even when the bare URL is allowed. The skill enforces freshness by reading `source_bundle_at` inside the JSON; web_fetch's own 5–15 min cache is well within the 24h staleness threshold.
 
 If you fork/rename the repo, update the URLs in `skills/multi-model-surf-briefing/SKILL.md` (the canonical skill body) and re-paste both into your project instructions here.
