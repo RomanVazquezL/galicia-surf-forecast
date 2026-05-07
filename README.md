@@ -33,6 +33,7 @@ Writes `today.json` and `archive/YYYY-MM-DD.json` to the current directory.
 
 ## More
 
+- **Using the skill in claude.ai?** Read [docs/SKILL_SETUP.md](docs/SKILL_SETUP.md) — one-time setup of URLs in your project instructions.
 - Working in this repo? Read [CLAUDE.md](CLAUDE.md) — architecture, data shape, and known quirks.
 - Where this fits in the larger product? Read [docs/PRD.md](docs/PRD.md).
 - The skill that consumes this data: `skills/multi-model-surf-briefing/SKILL.md` (paste into claude.ai).

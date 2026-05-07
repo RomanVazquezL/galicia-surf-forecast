@@ -18,13 +18,18 @@ When making changes here, stay within the FR1 scope: forecast ingestion, archiva
 
 `scripts/fetch.py` is the single entry point. For each spot in the `SPOTS` dict, it:
 
-1. Calls **Open-Meteo Marine API** for 3-day hourly wave data with 3 models: `ewam` (DWD, 5 km regional — best for Galicia), `ncep_gfswave025` (global, 25 km), `meteofrance_wave` (~10 km global). No auth.
-2. Calls **Open-Meteo Forecast API** for 3-day hourly wind with 3 models: `best_match`, `ecmwf_ifs025`, `gfs_seamless`.
+1. Calls **Open-Meteo Marine API** for 7-day hourly wave data with 3 models: `ewam` (DWD, 5 km regional — best for Galicia), `ncep_gfswave025` (global, 25 km), `meteofrance_wave` (~10 km global). No auth.
+2. Calls **Open-Meteo Forecast API** for 7-day hourly wind with 3 models: `best_match`, `ecmwf_ifs025`, `gfs_seamless`.
 3. Scrapes **wisuki.com** for 7 days of tides — times, heights, and tidal coefficients (Spanish/French 20–120 scale), with reference station name.
 4. Has `timeout=60s` and `retries=2` on Open-Meteo (Bastiagueiro intermittently times out on first attempt).
 5. Sleeps 1.5 s between spots for API politeness and to avoid clustered timeouts.
 
-Results are merged into one dict and written to `today.json` (always overwritten) and `archive/<date>.json` (immutable per-day history). The workflow commits as `forecast-bot`.
+Results are merged into one dict, then **two writes** happen with different formatting:
+
+- `archive/<date>.json` — full Open-Meteo response, indented. Immutable per-day history; kept fat for debugging.
+- `today.json` — slim copy: Open-Meteo metadata (`generationtime_ms`, `hourly_units`, `utc_offset_seconds`, `elevation`, `model_elevation`, `timezone`, `timezone_abbreviation`) stripped from `waves`/`wind` blocks; the `time` array deduped between `waves.hourly` and `wind.hourly` (kept only on `waves.hourly`); all floats rounded to 2 decimals; written single-line with `separators=(",", ":")`. Live consumers read this; size is minimized to avoid `web_fetch` truncation in claude.ai.
+
+Before the writes, `fetch.py` runs sanity checks (assertions on the spot set and on having ≥7 forecast days) — drift causes the workflow to fail without committing. The workflow commits as `forecast-bot`.
 
 ## Schema
 
@@ -36,8 +41,8 @@ Results are merged into one dict and written to `today.json` (always overwritten
 
 Each spot entry has:
 
-- `lat`, `lon` — coordinates.
-- `waves`, `wind` — raw Open-Meteo responses with model-suffixed field names (e.g. `wave_height_ewam`). On error, the value is `{"error": "..."}`.
+- `lat`, `lon` — coordinates of the SPOT (top-level on the spot entry).
+- `waves`, `wind` — Open-Meteo responses with model-suffixed field names (e.g. `wave_height_ewam`). On error, the value is `{"error": "..."}`. In the slim `today.json`, the metadata blocks listed above (`generationtime_ms`, `hourly_units`, etc.) are removed, but the inner `latitude` / `longitude` fields are **kept** — those are the model grid-cell coordinates, not duplicates of the spot's lat/lon, and they're how grid-mask issues like Esteiro de Xove's EWAM null are diagnosed. `wind.hourly.time` is dropped when it equals `waves.hourly.time`; consumers read time from `waves.hourly.time`. The archive file under `archive/<date>.json` keeps the full Open-Meteo response un-stripped.
 - `tide` — **always a list** (empty `[]` when missing or unmapped). Each item: `date`, `reference_station`, `tides[]` (list of `{type, time, height_m, coefficient}`).
 - `tide_error` — string, present **only** when `tide` is empty due to a problem. Values: `"no_wisuki_mapping"` (no Wisuki ID configured for the spot), `"empty_scrape"` (Wisuki returned no parseable rows — likely an upstream HTML change), or `"<ExceptionClass>: <message>"` for raised exceptions. Sibling of `tide`, not nested inside it.
 - `_meta` — data-quality flags: `waves_ok`, `wind_ok`, `tide_ok`, plus per-wave-model flags `ewam_ok`, `gfswave_ok`, `mfwam_ok`. A model flag is `false` if the response errored or returned all null/zero values.

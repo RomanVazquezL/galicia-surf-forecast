@@ -1,4 +1,4 @@
-import requests, json, datetime, pathlib, re, time
+import copy, requests, json, datetime, pathlib, re, time
 from bs4 import BeautifulSoup
 
 # ─── Spots ─────────────────────────────────────────────────────────────
@@ -96,6 +96,49 @@ def _model_ok(waves_response, suffix):
     arr = waves_response.get("hourly", {}).get(f"wave_height_{suffix}", [])
     return any(v not in (None, 0, 0.0) for v in arr)
 
+
+# ─── Slim helpers for live today.json ─────────────────────────────────
+def round_floats(obj, ndigits=2):
+    """Recursively round floats in a JSON-shaped structure."""
+    if isinstance(obj, float):
+        return round(obj, ndigits)
+    if isinstance(obj, dict):
+        return {k: round_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [round_floats(v, ndigits) for v in obj]
+    return obj
+
+
+def slim_bundle(b):
+    """Return a slim copy of the bundle for live publication.
+
+    Strips Open-Meteo metadata blocks the consumer doesn't use; dedupes the
+    time array between waves.hourly and wind.hourly when they agree (they
+    should, since both are fetched with the same Europe/Madrid timezone).
+    Keeps `latitude`/`longitude` inside `waves`/`wind` — those are model
+    grid-cell coords, useful for diagnosing grid-mask issues like the
+    Esteiro de Xove EWAM null. Keeps `_meta` (consumer reads it).
+    Archive copy stays unmodified — full Open-Meteo response for debugging.
+    """
+    b = copy.deepcopy(b)
+    bloat_keys = (
+        "generationtime_ms", "utc_offset_seconds", "timezone",
+        "timezone_abbreviation", "elevation", "model_elevation",
+        "hourly_units",
+    )
+    for spot in b.get("spots", {}).values():
+        for block_name in ("waves", "wind"):
+            block = spot.get(block_name)
+            if not isinstance(block, dict):
+                continue
+            for k in bloat_keys:
+                block.pop(k, None)
+        wt = spot.get("waves", {}).get("hourly", {}).get("time")
+        wnt = spot.get("wind", {}).get("hourly", {}).get("time")
+        if wt and wnt and wt == wnt:
+            del spot["wind"]["hourly"]["time"]
+    return round_floats(b, 2)
+
 # ─── Main pull loop ────────────────────────────────────────────────────
 bundle = {
     "schema_version": 2,
@@ -112,7 +155,7 @@ for name, (lat, lon) in SPOTS.items():
                       "swell_wave_height,swell_wave_direction,swell_wave_period",
             "models": WAVE_MODELS,
             "timezone": "Europe/Madrid",
-            "forecast_days": 3,
+            "forecast_days": 7,
         },
     )
     wind = fetch_with_retry(
@@ -122,7 +165,7 @@ for name, (lat, lon) in SPOTS.items():
             "hourly": "wind_speed_10m,wind_direction_10m,wind_gusts_10m",
             "models": WIND_MODELS,
             "timezone": "Europe/Madrid",
-            "forecast_days": 3,
+            "forecast_days": 7,
         },
     )
     wid, slug = WISUKI.get(name, (None, None))
@@ -155,11 +198,29 @@ for name, (lat, lon) in SPOTS.items():
     # Friendly pause between spots
     time.sleep(1.5)
 
+# ─── Sanity checks (drift catchers) ────────────────────────────────────
+expected_spots = set(SPOTS.keys())
+got_spots = set(bundle["spots"].keys())
+assert got_spots == expected_spots, (
+    f"spot drift: got {got_spots}, expected {expected_spots}"
+)
+sample = next(iter(bundle["spots"].values()))
+sample_times = sample.get("waves", {}).get("hourly", {}).get("time", []) or []
+n_days = len({t[:10] for t in sample_times})
+assert n_days >= 7, f"expected >= 7 forecast days in bundle, got {n_days}"
+
 # ─── Write outputs ─────────────────────────────────────────────────────
-pathlib.Path("today.json").write_text(json.dumps(bundle, indent=2))
 date_str = datetime.date.today().isoformat()
 pathlib.Path("archive").mkdir(exist_ok=True)
-pathlib.Path(f"archive/{date_str}.json").write_text(json.dumps(bundle, indent=2))
+# Archive: full Open-Meteo response, indented for debugging
+pathlib.Path(f"archive/{date_str}.json").write_text(
+    json.dumps(bundle, indent=2), encoding="utf-8"
+)
+# Live: slim + compact (for skill consumption — minimizes truncation risk)
+slim = slim_bundle(bundle)
+pathlib.Path("today.json").write_text(
+    json.dumps(slim, separators=(",", ":")), encoding="utf-8"
+)
 
 n_total = len(bundle["spots"])
 n_waves = sum(1 for s in bundle["spots"].values() if "error" not in s["waves"])

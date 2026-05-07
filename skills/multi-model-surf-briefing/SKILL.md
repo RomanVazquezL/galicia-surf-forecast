@@ -44,7 +44,7 @@ Top-level fields:
 Per-spot:
 - `lat`, `lon` — coordinates.
 - `data_quality` — `{ewam_ok, gfswave_ok, mfwam_ok, wind_ok, tide_ok, n_models_waves}`. `n_models_waves` is the count of wave models with usable data for this spot (0–3). Use it to detect single-model spots (Esteiro de Xove) and zero-model spots (rare; full degrade).
-- `days` — keyed by ISO date (`YYYY-MM-DD`). Three days, today onward.
+- `days` — keyed by ISO date (`YYYY-MM-DD`). Seven days, today onward.
 
 Per spot per day:
 - `hourly` — model-aggregated hourly arrays in 24-hour blocks. Use only when the user asks about a specific hour. Fields:
@@ -91,19 +91,31 @@ In practice most spots have **2 useful wave models**, not 3. Esteiro de Xove has
 
 `web_fetch` the summary URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json?d={YYYY-MM-DD}`, where `{YYYY-MM-DD}` is today's UTC date (e.g. `?d=2026-05-06`). The dated suffix is a cache-buster — see The summary file section above for why this matters.
 
-**Precondition for trustworthy fetch:** the summary URL must be present in this project's custom instructions (under `<sources_in_this_project>`) so claude.ai treats it as user-provided context for `web_fetch`. Without that, fresh sessions return `PERMISSIONS_ERROR` and this skill falls back per the failure rule below.
-
-**Never** prompt the user to paste the URL back. If `web_fetch` fails, fall back silently.
+**Precondition for trustworthy fetch:** the summary URL must be present in this project's custom instructions (under `<sources_in_this_project>`) so claude.ai treats it as user-provided context for `web_fetch`. Without that, fresh sessions return `PERMISSIONS_ERROR` and this skill falls back to Tier 1.5 (raw bundle) per the rules below.
 
 Branch on the result:
 
 **If `web_fetch` succeeds**, parse JSON. Read `source_bundle_at` (NOT `generated_at` — `generated_at` is when the summary script ran; `source_bundle_at` is when the underlying forecast was pulled, which is the actual data freshness). Three cases:
 
-- **Within 24 hours of now** → fresh, proceed.
+- **Within 24 hours of now** → fresh, proceed to Step 2.
 - **24–30 hours old** → fresh-ish (Actions probably ran but slightly late). Proceed but note in the footnote.
-- **More than 30 hours old** → stale. The cron likely failed. Tell the user briefly ("summary is stale, falling back to direct fetch"), then follow the workflow in `/mnt/skills/user/daily-surf-briefing/SKILL.md` instead. Stop running this skill.
+- **More than 30 hours old** → stale. The cron likely failed. Tell the user briefly ("summary is stale, falling back to direct fetch"), then proceed to Tier 2 (`daily-surf-briefing` via Wisuki/AEMET). Stop running this skill.
 
-**If `web_fetch` fails for any reason** — `PERMISSIONS_ERROR`, 404, network error, JSON parse error, anything — fall back silently to `daily-surf-briefing`. One short line in your reply: `Multi-model summary unreachable, using direct fetch.` Then follow `/mnt/skills/user/daily-surf-briefing/SKILL.md`. Do not stop the turn, do not prompt for the URL, do not retry. The user can fix provenance by adding the URL to project instructions; that's their responsibility, not mid-skill recovery work.
+> **Note:** with `forecast_days=7` in the bundle, a 24-hour-old summary still has 6 fresh days ahead — even if the cron missed once, day-1 through day-5 forecasts remain inside the bundle's horizon. Don't over-trigger the stale fallback for normal cron-skip cases.
+
+**If `web_fetch` returns `PERMISSIONS_ERROR`** on the summary URL — the URL isn't in this project's allowed sources. Output ONE short setup-required message and proceed to Tier 1.5 (do not stop the turn):
+
+> Multi-model summary needs one-time setup. Add `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json` to `<sources_in_this_project>` in this project's custom instructions. See `docs/SKILL_SETUP.md`. Falling back to the raw bundle for now.
+
+This message will fire every session that hits `PERMISSIONS_ERROR` until the user adds the URL — skills don't have cross-session state, so "fires until setup is done" is the contract. It is **distinct** from per-session paste prompts (which were removed) — the user's action here is one-time and persistent.
+
+**If `web_fetch` returns 404, network error, or JSON parse error** on the summary → fall back silently to Tier 1.5. No setup message; the URL is fine, the file is just unreachable for transient reasons.
+
+**Tier 1.5 fallback — raw bundle (`today.json`).** When the summary is unreachable: `web_fetch` `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json?d={YYYY-MM-DD}` (same project, same cache-buster). If that succeeds, parse and run inline aggregation per Step 5b. The bundle's footnote MUST flag: "Multi-model summary unavailable; using on-the-fly bundle aggregation. Confidence labels approximated from cross-model spread; not pre-computed."
+
+If `today.json` is also unreachable (rare — the user typically has it in project sources), or the requested date is outside the bundle's horizon (`forecast_days` from `source_bundle_at`), proceed to Tier 2.
+
+**Tier 2 fallback — `daily-surf-briefing` (Wisuki/AEMET).** Follow `/mnt/skills/user/daily-surf-briefing/SKILL.md`. Use this when both the summary and the bundle are unreachable, or when the requested date is past the bundle's horizon (10-day Wisuki coverage helps here).
 
 ### Step 2 — Load the Galicia Surf Spot Guide
 
@@ -159,6 +171,24 @@ The summary's window means already aggregate equal-weighted across surviving mod
 **Wind at cape spots** (Pantín, Doniños — Cabo Prior shadow zone) — when `wind.agreement.direction` or `wind.agreement.speed` reads `"low"` at a cape spot, note in the footnote that the higher-res pair (best_match ≈ ICON-EU 6.5 km, ECMWF IFS025 9 km) is structurally more trustworthy than GFS seamless (27 km) at that cape. The summary's mean averages all three equally; the user should be aware that GFS may be pulling the mean off. If the call is genuinely close (e.g., the wind direction mean lands right at the edge of "offshore"), recommend an on-arrival check rather than overriding the mean. For per-model drill-down you'd need to re-fetch the raw bundle — usually not worth it.
 
 **Wind at flat-coast spots** (Caión, Razo, Bastiagueiro, Lariño, Esteiro de Xove) — equal-weighted mean is fine. If `wind.agreement` reads `"low"` here, that's a real synoptic-uncertainty flag, not a resolution-artifact issue.
+
+### Step 5b — Inline aggregation for the Tier 1.5 fallback (raw bundle)
+
+Only used when the primary summary path fails and we fall back to `today.json` per Step 1. The arithmetic in this step is exactly what `compute_summary.py` does in Python — just done in-context here because we don't have the pre-computed file. Acceptable on this fallback path only; not a relaxation of the primary-path "do NOT re-aggregate" rule.
+
+**Bundle shape note (slim variant, current):** live `today.json` is compact and slimmed. `wind.hourly.time` may be absent — when it is, time alignment uses `waves.hourly.time` (Open-Meteo returns aligned grids when both endpoints request the same timezone). `latitude`/`longitude` inside `waves`/`wind` blocks are model grid-cell coords — useful for diagnostics, not for spot identity (use top-level `lat`/`lon`).
+
+For each requested spot × day × window:
+
+1. **Locate hours.** Find indices `i` in `waves.hourly.time` where `time[i][:10] == target_date` AND the hour in `time[i][11:13]` is in `[window_start, window_end)`.
+2. **Aggregate waves.**
+   - For each model in `{ewam, ncep_gfswave025, meteofrance_wave}`: read `waves.hourly.wave_height_<model>[i]` for the located indices.
+   - **Drop a model whose entire window-slice is null or zero** (this respects what `_meta.{ewam,gfswave,mfwam}_ok` would have flagged).
+   - Compute mean and `max-min` spread across surviving models. Repeat for `wave_period_<model>` (linear), `wave_direction_<model>` (circular: take `atan2(sum sin, sum cos)` of the unit-vector means; spread = max angular distance from circular mean, capped at 180°).
+   - Repeat for `swell_wave_height_<model>`, `swell_wave_period_<model>`, `swell_wave_direction_<model>`.
+3. **Aggregate wind.** Use `waves.hourly.time` for time alignment (slim bundle drops the duplicate). For each model in `{best_match, ecmwf_ifs025, gfs_seamless}`: read `wind_speed_10m_<model>` and `wind_gusts_10m_<model>` (in km/h — convert to knots: ÷ 1.852), and `wind_direction_10m_<model>` (circular, same as wave direction).
+4. **Derive agreement labels** by comparing each spread to the threshold (same values as the primary path: `0.3 m / 25 %` for wave height, `2 s` period, `5 kt` wind speed, `30°` direction). `high` if spread ≤ 0.5×threshold, `medium` if ≤ threshold, `low` if > threshold. `single_model` if only one model survived. `n/a` if zero.
+5. **Render the card normally**, with the Tier 1.5 footnote flag from Step 1 included so the user knows the aggregation is approximate.
 
 ### Step 6 — Apply decision logic per spot
 
@@ -268,7 +298,10 @@ Identical card shape (header / TL;DR / 2×2 conditions / timing / picks / footer
     - **Agreement summary** — which agreement labels read `"low"` for the leading pick, on which variable, and the spread value.
     - **Tide source** — from summary if present; else `Wisuki tide fallback (summary didn't include tide)`.
     - **Galicia guide status** — `guide v[date] applied per-spot` or `guide unavailable`.
-    - **Forecast horizon caveat** for 2+ day forward briefings (same ±15–20% rule as `daily-surf-briefing`).
+    - **Forecast horizon caveat** scales with day:
+       - Day 1 (today / tomorrow): no caveat needed.
+       - Days 2–4: ±15–20% on wave height; ±10° on wind direction.
+       - Days 5–7: ±25–30%, plus a synoptic-uncertainty flag — at this range the model can be reading "this storm forms" rather than "this storm exists." Recommend a re-check the day before.
 
 The `Less coverage / look at` footer line still applies — name 1–2 less-covered or less-modeled spots that may still work if conditions on arrival differ from forecast. The proxy map gives access to many such spots without an extra fetch.
 

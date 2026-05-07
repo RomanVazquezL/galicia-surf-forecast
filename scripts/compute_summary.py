@@ -421,7 +421,9 @@ def process_spot(name, spot):
     wind_time = []
     n_wind_models = 0
     if wind_hourly and wind_ok:
-        wind_time = wind_hourly.get("time", [])
+        # fetch.py's slim step drops wind.hourly.time when it equals waves.hourly.time;
+        # fall back to wave_time in that case
+        wind_time = wind_hourly.get("time") or wave_time
         for raw, out_name in (("wind_speed_10m", "speed_kt"), ("wind_gusts_10m", "gusts_kt")):
             arrays = [get_model_array(wind_hourly, raw, m) for m in WIND_MODELS]
             arrays = [a for a in arrays if a is not None]
@@ -447,7 +449,7 @@ def process_spot(name, spot):
 
     tide_data = spot.get("tide") if isinstance(spot.get("tide"), list) else []
 
-    for date_iso in dates_seen[:3]:
+    for date_iso in dates_seen:
         out["days"][date_iso] = build_day_block(
             date_iso,
             wave_time,
