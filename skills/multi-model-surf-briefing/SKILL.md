@@ -103,7 +103,11 @@ Pass `text_content_token_limit=300000` on the call so the full ~250 KB file isn'
 
 Branch on the result:
 
-**If `web_fetch` succeeds**, parse JSON. Read `source_bundle_at` (NOT `generated_at` — `generated_at` is when the summary script ran; `source_bundle_at` is when the underlying forecast was pulled, which is the actual data freshness). Three cases:
+**If `web_fetch` succeeds**, parse JSON. Read `source_bundle_at` (NOT `generated_at` — `generated_at` is when the summary script ran; `source_bundle_at` is when the underlying forecast was pulled, which is the actual data freshness).
+
+**Compute freshness in UTC.** `source_bundle_at` is an ISO-8601 UTC timestamp (suffix `Z` or `+00:00`). The system clock shown to you may be in a different timezone — Madrid is UTC+1 (CET) or UTC+2 (CEST). Convert system local to UTC before subtracting, or pull `now_utc` directly. Example: a bundle generated at `2026-05-07T00:14:58Z`, queried at 06:14 Madrid local on 2026-05-07, is `06:14 − 02:00 (CEST offset) − 00:14:58 = ~4 hours` old, not ~12 hours. A common error mode is to read the system clock as if it were UTC and overestimate the age by the timezone offset; sanity-check before writing the footnote.
+
+Three cases:
 
 - **Within 24 hours of now** → fresh, proceed to Step 2.
 - **24–30 hours old** → fresh-ish (Actions probably ran but slightly late). Proceed but note in the footnote.
@@ -160,13 +164,17 @@ Each label is one of:
 - `"single_model"` — only one model contributed (no triangulation possible)
 - `"n/a"` — no models contributed (data unavailable)
 
-**Map to dot indicator per spot** for the card header (Step 7), based on the per-spot worst label across both wave and wind agreement:
+**Light-wind direction caveat — apply BEFORE the dot-indicator mapping.** When `wind.speed_kt.mean < 6` for the relevant window, treat `wind.agreement.direction = "low"` as **informational, not decision-relevant**, and do not let it drive the dot rating. The 30° absolute threshold doesn't scale with wind speed — at 3-4 kt, models legitimately disagree on direction by 30-70° because the wind is so light it's effectively variable, and the disagreement says nothing about surf-relevant conditions. At >6 kt the same `"low"` label is a real call (it would shift wave shape) and should propagate normally. This carveout applies to direction only — `wind.agreement.speed = "low"` at any wind speed is still decision-relevant.
+
+**Map to dot indicator per spot** for the card header (Step 7), based on the per-spot worst label across both wave and wind agreement (after applying the light-wind caveat above):
 
 - **●●●** — every relevant agreement label reads `"high"`.
 - **●●○** — at least one label reads `"medium"`; nothing reads `"low"` or `"single_model"`.
 - **●○○** — any label reads `"low"` or `"single_model"`, OR `data_quality.n_models_waves == 1`, OR `data_quality.wind_ok == false`.
 
 When the **leading-pick spot** is rated ●○○, **auto-downgrade the badge by one notch** (GO → MARGINAL, MARGINAL → SKIP). Cite the disagreeing variable and which models disagreed. The summary's `models_used` and `models_dropped` lists give you the cite directly.
+
+**Order of operations — do not re-rank picks to preserve badge color.** Pick the leading spot by Step 6 conditions fit (wind → tide → period → size/direction → exposure), THEN apply the agreement-based badge downgrade. The downgrade exists to make the badge reflect the leading pick's confidence — it is not a tiebreaker between candidate spots. If Caión is the right call by conditions but rated ●○○, the answer is "Caión, MARGINAL," not "Razo to keep the badge GO." Re-ranking by agreement after Step 6 inverts the rule's intent and optimises for presentation over decision quality.
 
 **Esteiro de Xove is permanently single-model for waves** (only MFWAM) — `waves.single_model: true`, agreement labels read `"single_model"`. Auto ●○○ regardless of forecast-day spread. This is structural, not a forecast-day issue. Flag it as such in the footnote rather than as a model disagreement.
 
@@ -175,6 +183,8 @@ When the **leading-pick spot** is rated ●○○, **auto-downgrade the badge by
 The summary's window means already aggregate equal-weighted across surviving models. So most disagreement is already "resolved" before you read it — the mean is what you report. What's left:
 
 **Wave disagreement** — when `waves.agreement.height` (or `period`/`direction`) is `"low"`, the spread > threshold. The mean is still your best single number; cite the spread and which models contributed via `waves.models_used` (e.g., "EWAM and MFWAM disagree on height by ~0.5 m"). With only 2 models surviving, "spread" equals "absolute difference" — say so. With only 1 surviving model (Esteiro de Xove), there is no triangulation; report MFWAM's number as the only number with a confidence caveat.
+
+**Caión NCEP-outlier sanity check.** Caión is the only spot where NCEP GFS Wave returns non-zero data — and CLAUDE.md notes it can be artifact-y. The summary aggregates all surviving models equal-weighted, so a single artifact-y NCEP value can pull the Caión mean off and inflate the spread, producing a `"low"` agreement label that's NCEP being NCEP rather than genuine model uncertainty. **When all of these hold:** (a) Caión is the leading pick, (b) `waves.models_used` contains all three (`ewam`, `meteofrance_wave`, `ncep_gfswave025`), and (c) any `waves.agreement.{height,period,direction}` reads `"low"` — drill into the raw bundle (`today.json`, Tier 1.5 read per Step 1) and pull per-model values for the same hours. If EWAM and MFWAM cluster within threshold and NCEP is the outlier, treat the EWAM+MFWAM mean as the operative number, downgrade NCEP's contribution, and note in the footnote: "NCEP GFS Wave outlier at Caión; EWAM+MFWAM consensus used." If all three actually disagree (or NCEP and one of EWAM/MFWAM cluster against the third), the summary's mean is fine and the `"low"` label is real — report it as-is. Do NOT fabricate a "real swell transition" narrative to explain away NCEP disagreement without checking the per-model values; rationalising into a story is the failure mode this rule exists to prevent.
 
 **Wind at cape spots** (Pantín, Doniños — Cabo Prior shadow zone) — when `wind.agreement.direction` or `wind.agreement.speed` reads `"low"` at a cape spot, note in the footnote that the higher-res pair (best_match ≈ ICON-EU 6.5 km, ECMWF IFS025 9 km) is structurally more trustworthy than GFS seamless (27 km) at that cape. The summary's mean averages all three equally; the user should be aware that GFS may be pulling the mean off. If the call is genuinely close (e.g., the wind direction mean lands right at the edge of "offshore"), recommend an on-arrival check rather than overriding the mean. For per-model drill-down you'd need to re-fetch the raw bundle — usually not worth it.
 
@@ -277,6 +287,8 @@ The auto-downgrade rule is now driven by model agreement directly, not heuristic
 - **Leading pick rated ●●○** → no auto-downgrade by default. Flag the uncertain variable in the footnote.
 - **Leading pick rated ●○○** → auto-downgrade by one notch. Cite the disagreeing variable and which models disagreed (or, for Esteiro de Xove, cite the structural single-model limitation).
 
+The downgrade applies AFTER the leading pick is selected on conditions (Step 6). Do NOT swap the leading pick to a higher-agreement spot just to keep the badge color — see "Order of operations" in Step 4.
+
 The "small but glassy" rule still applies — light wind plus tiny swell is MARGINAL, not GO, regardless of agreement.
 
 The triangulation-required heuristics from `daily-surf-briefing` (threshold-sensitive call, day 5+, active synoptic pattern) are now obsolete — they were proxies for "models might disagree." Now the summary measures disagreement directly and exposes it as a label.
@@ -301,15 +313,16 @@ Identical card shape (header / TL;DR / 2×2 conditions / timing / picks / footer
    - Single-model (label `"single_model"`): show the single value with sub-line `single model — <model name>` from `waves.models_used[0]`.
 
 3. **Footnote** replaces the sub-coast pull statement with multi-model summary. Required content:
-    - **Bundle age.** Compute as now − `source_bundle_at` (NOT `generated_at` — that's when the summary script ran; the underlying forecast freshness is `source_bundle_at`). Express in the freshest accurate unit: `Xm ago` if <1h, `Xh ago` if <24h, `Xd ago` otherwise. Format: `Bundle gen 2026-05-06 19:39 UTC · 3h ago`. Sanity check: the cron runs twice daily, so a healthy bundle is 0–12h old. If your computed age is ≥24h, recheck your arithmetic before writing it — that age implies cron failure and you should already be falling back to `daily-surf-briefing`. Do not confuse bundle age with the offset between today and the briefing day — a bundle generated today at 19:39 UTC for a Thursday briefing is a few hours old, not "24h old", regardless of which day Thursday is.
+    - **Bundle age.** Compute as `now_utc − source_bundle_at` (NOT `generated_at` — that's when the summary script ran; the underlying forecast freshness is `source_bundle_at`). **Both timestamps are UTC** — convert the system clock to UTC before subtracting (Madrid is UTC+1/+2; NY is UTC−4/−5). Reading the system clock as if it were UTC will overestimate the age by the timezone offset, producing wrong values like "12h old" when the bundle is actually 4h old. Express in the freshest accurate unit: `Xm ago` if <1h, `Xh ago` if <24h, `Xd ago` otherwise. Format: `Bundle gen 2026-05-06 19:39 UTC · 3h ago`. Sanity check: the cron runs twice daily, so a healthy bundle is 0–12h old. If your computed age is ≥24h, recheck your arithmetic before writing it — that age implies cron failure and you should already be falling back to `daily-surf-briefing`. Do not confuse bundle age with the offset between today and the briefing day — a bundle generated today at 19:39 UTC for a Thursday briefing is a few hours old, not "24h old", regardless of which day Thursday is.
     - **Models that returned valid data per spot** — read from `data_quality.n_models_waves` and the per-window `models_used`/`models_dropped`. Cite GFS Wave gaps and Esteiro's EWAM-null structural limitation explicitly when they affect leading picks.
     - **Agreement summary** — which agreement labels read `"low"` for the leading pick, on which variable, and the spread value.
     - **Tide source** — from summary if present; else `Wisuki tide fallback (summary didn't include tide)`.
     - **Galicia guide status** — `guide v[date] applied per-spot` or `guide unavailable`.
-    - **Forecast horizon caveat** scales with day:
-       - Day 1 (today / tomorrow): no caveat needed.
-       - Days 2–4: ±15–20% on wave height; ±10° on wind direction.
-       - Days 5–7: ±25–30%, plus a synoptic-uncertainty flag — at this range the model can be reading "this storm forms" rather than "this storm exists." Recommend a re-check the day before.
+    - **Forecast horizon caveat** scales with day. Day offsets are counted from today's local date in Europe/Madrid — `Day +0` = today, `Day +1` = tomorrow, etc. The bundle's horizon is `forecast_days = 7`, so days +0 through +6 are addressable.
+       - Day +0 (today): no caveat needed.
+       - Day +1 (tomorrow): no caveat needed.
+       - Days +2 through +4: ±15–20% on wave height; ±10° on wind direction.
+       - Days +5 through +6: ±25–30%, plus a synoptic-uncertainty flag — at this range the model can be reading "this storm forms" rather than "this storm exists." Recommend a re-check the day before.
 
 The `Less coverage / look at` footer line still applies — name 1–2 less-covered or less-modeled spots that may still work if conditions on arrival differ from forecast. The proxy map gives access to many such spots without an extra fetch.
 
