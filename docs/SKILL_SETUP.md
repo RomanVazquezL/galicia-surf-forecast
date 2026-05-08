@@ -8,7 +8,7 @@ Open your Galicia surf project on claude.ai → **custom instructions** → repl
 
 This is your existing project instructions, with three small edits:
 
-- **`<sources_in_this_project>`** — forecast bundle bullets list three URLs: dated archive summary (primary, cache-busting), bare summary (fallback for the morning-of edge case), bare bundle (Tier 1.5 fallback when both summary URLs fail). The dated archive path is what keeps the skill reading fresh data — `web_fetch` caches by full URL, so a date-stamped path is a fresh cache key each day.
+- **`<sources_in_this_project>`** — forecast bundle bullets list four URLs: dated archive summary in literal form (`archive_summary/{YYYY-MM-DD}.json`, cache-busting if claude.ai supports glob-match), dated archive summary in directory-prefix form (`archive_summary/`, cache-busting if claude.ai supports prefix-match), bare summary (fallback for the morning-of edge case), bare bundle (Tier 1.5 fallback when both summary URLs fail). Listing both dated forms is belt-and-suspenders — claude.ai's allowlist matching mode isn't documented, so we register both shapes and trust whichever it supports to activate. The dated archive path is what keeps the skill reading fresh data — `web_fetch` caches by full URL, so a date-stamped path is a fresh cache key each day.
 - **`<reasoning_protocol>`** — new step inserted (between current 3 and 4) about reading pre-computed `mean` / `spread` / `agreement` from the summary directly, so ad-hoc forecast questions don't drift into in-context arithmetic.
 - **XML-tag closing typos** — `<board_selection_rules>` and `<wetsuits>` were closing with `<...>` instead of `</...>`. Fixed.
 
@@ -181,8 +181,9 @@ Analytical, calm, precise. Explicit about trade-offs and uncertainty. Structured
 
 When I ask for "analysis of my surf data," lean on the summary workbook, surface real patterns (not generic stats), and clearly distinguish observation from inference. Don't fabricate conditions data the log doesn't contain.
 </what_the_log_can_and_cannot_tell_you>
-- **Forecast summary (primary, dated archive)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json`. Per-day archive of pre-computed per-spot, per-window aggregates with categorical model-agreement labels (`high`/`medium`/`low`/`single_model`/`n/a`). 7-day horizon. The skill substitutes today's UTC date into `{YYYY-MM-DD}` and fetches this URL first — the dated path acts as a cache-buster. **Read this; do not re-aggregate.** All numeric values are metric (knots for wind); imperial conversion happens at presentation time per `<input_conventions>`.
-- **Forecast summary (fallback, bare)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json`. Same shape as the dated archive but always-current. Used when today's archive 404s (between 00:00 UTC and the morning cron firing) or when the dated URL fails the allowlist.
+- **Forecast summary (primary, dated archive — literal form)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json`. Per-day archive of pre-computed per-spot, per-window aggregates with categorical model-agreement labels (`high`/`medium`/`low`/`single_model`/`n/a`). 7-day horizon. The skill substitutes today's UTC date into `{YYYY-MM-DD}` and fetches this URL first — the dated path acts as a cache-buster against `web_fetch`'s session cache. List this exactly as written so claude.ai's allowlist matches it if it supports glob/placeholder semantics. **Read this; do not re-aggregate.** All numeric values are metric (knots for wind); imperial conversion happens at presentation time per `<input_conventions>`.
+- **Forecast summary (primary, dated archive — directory prefix form)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/`. Same content target as the bullet above; this entry exists in case claude.ai's allowlist treats a trailing slash as a prefix that matches all child URLs. Belt-and-suspenders alongside the literal form — whichever matching mode claude.ai uses, one of these two forms should activate.
+- **Forecast summary (fallback, bare)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json`. Same shape as the dated archive but always-current. Used when today's archive 404s (between 00:00 UTC and the morning cron firing) or when neither dated form is matched by the allowlist. This URL works but is subject to `web_fetch` session cache — may serve multi-day-stale content.
 - **Forecast raw bundle (Tier 1.5 fallback)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json`. Multi-model raw bundle (3 wave models + 3 wind models per spot, 7-day horizon, slim/compact). Used by the skill when both summary URLs are unreachable; aggregates inline. Bare URL is fine here — Tier 1.5 only triggers when the summary path is already broken, so cache-bypass on the bundle isn't useful.
 - Other forecast screenshots, board specs, or notes I attach over time.
 </sources_in_this_project>
@@ -223,11 +224,12 @@ The two URLs in `<sources_in_this_project>` above need to be reachable via `web_
 
 If your version of claude.ai also has a separate "allowed sources" / "project knowledge" / "web access" panel:
 
-- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json` (primary — dated, cache-busting)
+- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json` (dated — literal form, in case the panel supports glob/placeholder matching)
+- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/` (dated — directory prefix form, in case the panel supports prefix matching)
 - `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json` (fallback — bare)
 - `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json` (Tier 1.5 fallback — bare)
 
-Add all three there too. Domain `raw.githubusercontent.com` should also be on any allow-list. If the panel supports prefix/wildcard matching, registering the `archive_summary/` directory prefix covers all dated summary URLs without per-day updates; if it's strict exact-match, the bare summary URL alone still lets the skill operate (it'll fall back to it automatically) — you'll just lose the cache-bypass benefit and may see stale data inside long-running claude.ai sessions.
+Add all four there too. Domain `raw.githubusercontent.com` should also be on any allow-list. The two dated forms are belt-and-suspenders for cache-busting: claude.ai's allowlist matching mode isn't documented, so whichever it supports (glob, prefix, or strict exact-match) — at most one of the two dated forms will activate, and the other is harmless. If neither activates (strict exact-match on the literal `{YYYY-MM-DD}` URL string), the bare summary URL still lets the skill operate via fallback, but you'll lose the cache-bypass benefit and may see stale data inside long-running claude.ai sessions.
 
 ## Step 3 — verify
 
@@ -252,7 +254,8 @@ run the briefing for tomorrow
 
 | URL | Role | Size | Updated |
 |---|---|---|---|
-| `archive_summary/{YYYY-MM-DD}.json` | Primary input — dated cache-bypass path | ~250 KB | Twice daily by GitHub Actions cron |
+| `archive_summary/{YYYY-MM-DD}.json` | Primary input — dated cache-bypass path (literal form, for glob/placeholder allowlist) | ~250 KB | Twice daily by GitHub Actions cron |
+| `archive_summary/` | Primary input — dated cache-bypass path (directory prefix form, for prefix-match allowlist) | n/a (path prefix) | n/a |
 | `today_summary.json` | Fallback — always-current copy of the same shape | ~250 KB | Same workflow run |
 | `today.json` | Tier 1.5 fallback — always-current raw bundle (slim) | ~180 KB | Same workflow run |
 
