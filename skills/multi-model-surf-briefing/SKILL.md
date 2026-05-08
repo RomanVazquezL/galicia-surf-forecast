@@ -1,21 +1,21 @@
 ---
 name: multi-model-surf-briefing
-description: Default daily surf-briefing skill for the user's seven core Galicia spots — Pantín, Doniños, Razo, Bastiagueiro, Caión, Lariño, Esteiro de Xove. Uses a multi-model forecast bundle hosted on GitHub (refreshed daily by GitHub Actions cron, three independent wave models + three independent wind models per spot) instead of live HTML scraping. Trigger on "daily briefing", "morning briefing", "surf outlook", "surf check", "what's it doing today", "should I surf today", "where should I surf this morning", "run the briefing", "do the daily", "surf brief", "how's [day] looking", "what's the forecast for [date]", or any request that names a Galicia spot and asks for conditions today/this week. Falls back automatically to daily-surf-briefing when the bundle is stale, missing, or the requested spot is outside the bundled set. Galicia only — does not cover NY, trips, or wave pools.
+description: Daily surf-briefing skill for the user's seven core Galicia spots — Pantín, Doniños, Razo, Bastiagueiro, Caión, Lariño, Esteiro de Xove. Uses a multi-model forecast bundle hosted on GitHub (refreshed twice daily by GitHub Actions cron, three independent wave models + three independent wind models per spot). Trigger on "daily briefing", "morning briefing", "surf outlook", "surf check", "what's it doing today", "should I surf today", "where should I surf this morning", "run the briefing", "do the daily", "surf brief", "how's [day] looking", "what's the forecast for [date]", or any request that names a Galicia spot and asks for conditions today/this week. When the bundle is stale (>30h) or unreachable, exits gracefully with a clear message — does not silently substitute another data path. Galicia only — does not cover NY, trips, or wave pools.
 ---
 
 # Multi-Model Surf Briefing — Galicia
 
-Morning surf outlook for the A Coruña / Ferrolterra region, built on a multi-model forecast bundle refreshed daily on GitHub. Output mirrors the `daily-surf-briefing` card format — one mobile card per requested day, prose backup underneath.
+Morning surf outlook for the A Coruña / Ferrolterra region, built on a multi-model forecast bundle refreshed twice daily on GitHub. Output is one mobile card per requested day with a prose backup underneath (card structure and prose template defined in Step 8 and Step 9).
 
-The differentiator versus `daily-surf-briefing`: a GitHub Actions cron runs twice per day. `fetch.py` pulls forecasts from three independent wave models (DWD EWAM 5 km regional, NCEP GFS Wave ~25 km global, MeteoFrance Wave ~10 km global) plus three independent wind models (Open-Meteo `best_match`, ECMWF IFS025, GFS seamless) for seven pre-defined spots, and `compute_summary.py` then produces a derived summary file with per-spot, per-day, per-window aggregates and **categorical agreement labels** baked in. The result: real cross-model triangulation runs automatically every morning, with the deterministic arithmetic done in Python, not in this skill.
-
-This is the default daily-briefing skill. The old `daily-surf-briefing` handles fallbacks: stale bundle, spots outside the bundle, trip planning, anywhere outside Galicia.
+A GitHub Actions cron runs `fetch.py` twice per day. It pulls forecasts from three independent wave models (DWD EWAM 5 km regional, NCEP GFS Wave ~25 km global, MeteoFrance Wave ~10 km global) plus three independent wind models (Open-Meteo `best_match`, ECMWF IFS025, GFS seamless) for the seven pre-defined spots. `compute_summary.py` then produces a derived summary file with per-spot, per-day, per-window aggregates and **categorical agreement labels** baked in. Real cross-model triangulation runs automatically every morning, with the deterministic arithmetic done in Python, not in this skill.
 
 ## When to use
 
-Same trigger phrases as `daily-surf-briefing` — daily briefing, morning briefing, surf outlook, what's it doing today, should I surf, run the briefing, how's Thursday looking, etc. Try this skill first. If Step 1 finds the summary stale or unavailable, hand off to `daily-surf-briefing`.
+Trigger phrases: daily briefing, morning briefing, surf outlook, what's it doing today, should I surf, run the briefing, how's Thursday looking, what's the forecast for [date], or any request that names one of the seven core Galicia spots and asks about conditions.
 
-If the user asks about NY, The Wave Bristol, or a trip location, redirect — neither skill covers those.
+If the user asks about NY, The Wave Bristol, or any trip location, redirect — this skill is Galicia-only.
+
+If the bundle is unreachable or stale (>30h old), exit gracefully per Step 1 — the skill does not substitute a different data path. Tell the user clearly so they can do a manual check or re-run the workflow.
 
 ## The summary file
 
@@ -124,7 +124,11 @@ Three cases:
 
 - **Within 24 hours of now** → fresh, proceed to Step 2.
 - **24–30 hours old** → fresh-ish (Actions probably ran but slightly late). Proceed but note in the footnote.
-- **More than 30 hours old** → stale. The cron likely failed. Tell the user briefly ("summary is stale, falling back to direct fetch"), then proceed to Tier 2 (`daily-surf-briefing` via Wisuki/AEMET). Stop running this skill.
+- **More than 30 hours old** → stale. The cron likely failed (the workflow runs at 05:27 and 13:47 UTC; missing both means a real failure). Tell the user briefly:
+
+  > Forecast bundle is stale (last updated Xh ago — twice-daily cron appears to have failed). Not running the briefing on data this old. To refresh: re-run the GitHub Action (`gh workflow run forecast.yml`) or check Wisuki/AEMET manually for now.
+
+  Then exit. Do not produce a card on stale data — model agreement on a 30h+ bundle is meaningless because the synoptic state has likely shifted.
 
 > **Note:** with `forecast_days=7` in the bundle, a 24-hour-old summary still has 6 fresh days ahead — even if the cron missed once, day-1 through day-5 forecasts remain inside the bundle's horizon. Don't over-trigger the stale fallback for normal cron-skip cases.
 
@@ -140,15 +144,21 @@ This message will fire every session that hits `PERMISSIONS_ERROR` on both URLs 
 
 **Tier 1.5 fallback — raw bundle (`today.json`).** When both summary fetches are unreachable, `web_fetch` the bare bundle URL `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json` with `text_content_token_limit=300000` (the slim bundle is ~180 KB and gets truncated by default). The bare URL is fine here — Tier 1.5 only triggers on `PERMISSIONS_ERROR` / 404, which means the summary path is broken regardless of cache. Stale-cache risk on the bundle is a non-issue because freshness is still cross-checked against the bundle's `generated_at`. If a dated archive bundle is needed for ad-hoc historical inspection, see `archive/{YYYY-MM-DD}.json` in the repo. If the fetch succeeds, parse and run inline aggregation per Step 5b. The footnote MUST flag: "Multi-model summary unavailable; using on-the-fly bundle aggregation. Confidence labels approximated from cross-model spread; not pre-computed."
 
-If `today.json` is also unreachable (rare — the user typically has it in project sources), or the requested date is outside the bundle's horizon (`forecast_days` from `source_bundle_at`), proceed to Tier 2.
+**If `today.json` is also unreachable, or the requested date is outside the bundle's horizon** (`forecast_days` from `source_bundle_at` — 7 days), exit gracefully:
 
-**Tier 2 fallback — `daily-surf-briefing` (Wisuki/AEMET).** Follow `/mnt/skills/user/daily-surf-briefing/SKILL.md`. Use this when both the summary and the bundle are unreachable, or when the requested date is past the bundle's horizon (10-day Wisuki coverage helps here).
+> Forecast data is unavailable right now (couldn't reach the multi-model summary or the raw bundle on GitHub). Try again in a few minutes, or do a manual check at Wisuki/AEMET if you need an answer now. If this persists, the GitHub Action may have failed — re-run with `gh workflow run forecast.yml`.
+
+Or, for past-horizon requests:
+
+> The bundle covers 7 days from `source_bundle_at` ({date_range}). The date you asked about ({requested_date}) is outside that horizon. For longer-range outlooks, use Surf-forecast or Windy directly.
+
+Do not silently substitute another skill or another data source.
 
 ### Step 2 — Load the Galicia Surf Spot Guide
 
-Identical to `daily-surf-briefing` Step 1. Run `view /mnt/project/` to find the guide (currently `Galicia_Surf_Spot_Guide_v2.docx`; match on the prefix). Read the relevant sub-coast sections in full — this is the per-spot translation layer between forecast numbers and conditions.
+Run `view /mnt/project/` to find the guide (currently `Galicia_Surf_Spot_Guide_v2.docx`; match on the `Galicia_Surf_Spot_Guide` prefix in case the version suffix changes). Read the relevant sub-coast sections in full — this is the per-spot translation layer between forecast numbers and conditions (offshore wind direction per spot, tide windows, hazards, board hints).
 
-If the guide is missing, flag in the footnote and degrade per-spot reads.
+If the guide is missing from `/mnt/project/`, flag it in the footnote (`guide unavailable — per-spot calls degraded`) and proceed with whatever per-spot knowledge is in this skill body and the bundle's wind/tide data alone.
 
 ### Step 3 — Read pre-computed values for the requested day(s) and window(s)
 
@@ -235,7 +245,7 @@ Concrete loop:
 4. Score each spot: green (all match), amber (one mismatch), red (multiple mismatches).
 5. Apply the agreement rating from Step 4 — the more uncertain the data, the less confident the call.
 
-**Anti-patterns** carry over from `daily-surf-briefing`:
+**Anti-patterns:**
 
 - Don't extrapolate one coast to another. The summary gives data for each spot directly; use it.
 - Don't use offshore size as nearshore size. Summary wave heights derive from Open-Meteo's wave model output at the coastal grid cell — nearshore-open-water. On exposed open beaches, breaking surf is ≈ 10–25% smaller than the model number (1.0 m model → ~2.5–3 ft breaking). For ría spots, use the guide's per-spot operating window thresholds.
@@ -294,7 +304,7 @@ Reason from conditions, not labels. Don't reach for the 6'10" unless the summary
 
 #### Badge calibration
 
-Same values as `daily-surf-briefing`: `GO — DAWN PATROL`, `GO`, `MARGINAL`, `SKIP`.
+Badge values: `GO — DAWN PATROL` (clean conditions, dawn priority), `GO` (worth the drive at any hour the timing fits), `MARGINAL` (surfable but compromised — go only if you're already nearby or want the practice), `SKIP` (not worth a session).
 
 The auto-downgrade rule is now driven by model agreement directly, not heuristics:
 
@@ -306,44 +316,75 @@ The downgrade applies AFTER the leading pick is selected on conditions (Step 6).
 
 The "small but glassy" rule still applies — light wind plus tiny swell is MARGINAL, not GO, regardless of agreement.
 
-The triangulation-required heuristics from `daily-surf-briefing` (threshold-sensitive call, day 5+, active synoptic pattern) are now obsolete — they were proxies for "models might disagree." Now the summary measures disagreement directly and exposes it as a label.
+Note: this skill does NOT use heuristic triangulation triggers (threshold-sensitive call, day 5+, active synoptic pattern). The summary measures cross-model disagreement directly and exposes it as a label, which is more precise than any heuristic. Read the labels; don't second-guess them with rules-of-thumb about when models "should" disagree.
 
 ### Step 8 — Render the visualization
 
-Same card structure and visual tokens as `daily-surf-briefing` Step 5. Single mandatory output per skill run. Path priority:
+Single mandatory output per skill run. Render path priority:
 
 1. `visualize:show_widget` (preferred)
 2. HTML at `/mnt/user-data/outputs/{YYYY-MM-DD}_briefing.html` + `present_files`
 3. Tight prose card if neither widget nor file output is available
 
-#### Card structure — what's different versus `daily-surf-briefing`
+Mobile width target: 380 px. Dense, scannable, no decorative chrome.
 
-Identical card shape (header / TL;DR / 2×2 conditions / timing / picks / footer / footnote). Three additions:
+#### Card structure
 
-1. **Agreement dot indicator** on each spot pick — `●●●`, `●●○`, or `●○○` — placed at the right of the spot tile, alongside the existing tag (`primary`, `backup`, etc.). Use light-gray dots for neutral, amber for ●○○. Read directly from the summary's `agreement` labels per Step 4.
+Order: **header → TL;DR → 2×2 conditions → timing → picks → footer → footnote.** One card per requested day; multi-day requests stack chronologically.
 
-2. **Conditions tile spread display.** When the relevant `agreement` label reads `"low"`, show the spread instead of a single number:
-   - Agree (label `"high"` or `"medium"`): `1.0 m / 3 ft` with sub-line `<n> models agree` where `<n>` = `len(models_used)`
-   - Disagree (label `"low"`): `~1.0 m ±0.2 m / ~3 ft ±0.5 ft` (use mean and spread/2 for the band) with sub-line `<n>-model spread`. Or render as `(mean − spread/2) – (mean + spread/2)` if you prefer an explicit range. The summary doesn't emit min/max, but mean ± spread/2 is a sufficient approximation.
-   - Single-model (label `"single_model"`): show the single value with sub-line `single model — <model name>` from `waves.models_used[0]`.
+**Header.** `[Day name] briefing — [date]` (e.g. `Saturday briefing — May 9`). If the leading pick concentrates in one sub-coast, append a short tag (e.g. `Ferrolterra lead`).
 
-3. **Footnote** replaces the sub-coast pull statement with multi-model summary. Required content:
-    - **Bundle age.** Compute as `now_utc − source_bundle_at` (NOT `generated_at` — that's when the summary script ran; the underlying forecast freshness is `source_bundle_at`). **Both timestamps are UTC** — convert the system clock to UTC before subtracting (Madrid is UTC+1/+2; NY is UTC−4/−5). Reading the system clock as if it were UTC will overestimate the age by the timezone offset, producing wrong values like "12h old" when the bundle is actually 4h old. Express in the freshest accurate unit: `Xm ago` if <1h, `Xh ago` if <24h, `Xd ago` otherwise. Format: `Bundle gen 2026-05-06 19:39 UTC · 3h ago`. Sanity check: the cron runs twice daily, so a healthy bundle is 0–12h old. If your computed age is ≥24h, recheck your arithmetic before writing it — that age implies cron failure and you should already be falling back to `daily-surf-briefing`. Do not confuse bundle age with the offset between today and the briefing day — a bundle generated today at 19:39 UTC for a Thursday briefing is a few hours old, not "24h old", regardless of which day Thursday is.
-    - **Models that returned valid data per spot** — read from `data_quality.n_models_waves` and the per-window `models_used`/`models_dropped`. Cite GFS Wave gaps and Esteiro's EWAM-null structural limitation explicitly when they affect leading picks.
-    - **Agreement summary** — which agreement labels read `"low"` for the leading pick, on which variable, and the spread value.
-    - **Tide source** — from summary if present; else `Wisuki tide fallback (summary didn't include tide)`.
-    - **Galicia guide status** — `guide v[date] applied per-spot` or `guide unavailable`.
-    - **Forecast horizon caveat** scales with day. Day offsets are counted from today's local date in Europe/Madrid — `Day +0` = today, `Day +1` = tomorrow, etc. The bundle's horizon is `forecast_days = 7`, so days +0 through +6 are addressable.
-       - Day +0 (today): no caveat needed.
-       - Day +1 (tomorrow): no caveat needed.
-       - Days +2 through +4: ±15–20% on wave height; ±10° on wind direction.
-       - Days +5 through +6: ±25–30%, plus a synoptic-uncertainty flag — at this range the model can be reading "this storm forms" rather than "this storm exists." Recommend a re-check the day before.
+**TL;DR (1–2 lines).** Lead with the badge and the leading pick name (`GO — Pantín contest peak right`). Add a one-line "why" — the dominant condition driving the call (`head-high NW swell, ESE offshore, mid-tide window 7–10 AM`).
 
-The `Less coverage / look at` footer line still applies — name 1–2 less-covered or less-modeled spots that may still work if conditions on arrival differ from forecast. The proxy map gives access to many such spots without an extra fetch.
+**2×2 conditions tile.** Four cells covering the day's dominant inputs, all spot-level for the LEADING PICK (not coast-wide averages). Standard layout:
+- Top-left — wave size: `1.4 m / 4.5 ft` plus a model-agreement sub-line (see "Conditions tile spread display" below).
+- Top-right — wave period and direction: `10 s · NNW 342°`.
+- Bottom-left — wind: `4 kt / 7 km/h ESE 95°` plus gusts if they diverge significantly from mean (`gusts 15 kt`).
+- Bottom-right — tide: low/high times and coefficient (`L 04:06 · H 10:11 · coef 37`).
+
+**Timing.** A one-line recommended session window with context: `06:30–09:30 — ESE offshore through low+mid, before tide fills past 9:30.`
+
+**Picks.** Three ranked spot tiles (A / B / C). Each tile carries: spot name, spot-level conditions read (size + period + wind), the agreement dot indicator (`●●●` / `●●○` / `●○○`), tag (`primary` / `backup` / `long-shot`), and a one-line "why this pick". The dot indicator sits at the right of the tile alongside the tag. Use light-gray dots for neutral, amber for `●○○`.
+
+**Footer — `Less coverage / look at`.** One or two less-bundled spots that may still work if conditions on arrival differ from forecast. The proxy map in Step 7 gives access to many such spots without an extra fetch.
+
+**Footnote.** See footnote requirements below.
+
+#### Conditions tile spread display
+
+Apply per relevant `agreement` label in the leading pick's window aggregates:
+- **Agree** (label `"high"` or `"medium"`): `1.0 m / 3 ft` with sub-line `<n> models agree` where `<n>` = `len(models_used)`.
+- **Disagree** (label `"low"`): `~1.0 m ±0.2 m / ~3 ft ±0.5 ft` (use mean and spread/2 for the band) with sub-line `<n>-model spread`. Or render an explicit range as `(mean − spread/2) – (mean + spread/2)` if you prefer. The summary doesn't emit min/max; mean ± spread/2 is a sufficient approximation.
+- **Single-model** (label `"single_model"`): show the single value with sub-line `single model — <model name>` from `waves.models_used[0]`.
+
+#### Footnote — required content
+
+- **Bundle age.** Compute as `now_utc − source_bundle_at` (NOT `generated_at` — that's when the summary script ran; the underlying forecast freshness is `source_bundle_at`). **Both timestamps are UTC** — convert the system clock to UTC before subtracting (Madrid is UTC+1/+2; NY is UTC−4/−5). Reading the system clock as if it were UTC will overestimate the age by the timezone offset, producing wrong values like "12h old" when the bundle is actually 4h old. Express in the freshest accurate unit: `Xm ago` if <1h, `Xh ago` if <24h, `Xd ago` otherwise. Format: `Bundle gen 2026-05-06 19:39 UTC · 3h ago`. Sanity check: the cron runs twice daily, so a healthy bundle is 0–12h old. If your computed age is ≥24h, recheck your arithmetic — that age implies cron failure and you should already have exited per Step 1's stale-bundle path. Do not confuse bundle age with the offset between today and the briefing day — a bundle generated today at 19:39 UTC for a Thursday briefing is a few hours old, not "24h old", regardless of which day Thursday is.
+- **Models that returned valid data per spot** — read from `data_quality.n_models_waves` and the per-window `models_used`/`models_dropped`. Cite GFS Wave gaps and Esteiro's EWAM-null structural limitation explicitly when they affect leading picks.
+- **Agreement summary** — which agreement labels read `"low"` for the leading pick, on which variable, and the spread value.
+- **Tide source** — from summary if present; else `Wisuki tide fallback (summary didn't include tide)`.
+- **Galicia guide status** — `guide v[date] applied per-spot` or `guide unavailable`.
+- **Forecast horizon caveat** scales with day. Day offsets are counted from today's local date in Europe/Madrid — `Day +0` = today, `Day +1` = tomorrow, etc. The bundle's horizon is `forecast_days = 7`, so days +0 through +6 are addressable.
+   - Day +0 (today): no caveat needed.
+   - Day +1 (tomorrow): no caveat needed.
+   - Days +2 through +4: ±15–20% on wave height; ±10° on wind direction.
+   - Days +5 through +6: ±25–30%, plus a synoptic-uncertainty flag — at this range the model can be reading "this storm forms" rather than "this storm exists." Recommend a re-check the day before.
 
 ### Step 9 — Prose backup
 
-Same template as `daily-surf-briefing` Step 6. Add one extra line in the data note: the model-agreement summary (e.g. "EWAM and MeteoFrance agree within 10 cm; ICON-EU and ECMWF IFS agree on wind, GFS seamless reads 4 kts lower — the summary's mean averages all three equally, so trust ICON-EU+ECMWF for cape-spot direction"). Read agreement labels from the summary; do not recompute spreads in your head.
+Render a short prose section beneath the visual card. Purpose: explain the ranking, surface uncertainty, and call out anything the user should verify on arrival. Tight paragraphs, no bullets except the on-arrival list at the end.
+
+Template:
+
+**Reasoning, briefly** — heading.
+
+**Day-shape paragraph (1–2 sentences).** Name the dominant features that drove the call: swell direction + period + size, wind direction + speed band, tide stage relative to the recommended window. This is the synoptic context behind the picks.
+
+**Per-pick justification (one short paragraph per ranked pick).** "Why [Pick A] over [Pick B]" — what tipped the ranking. "Why [Pick B] is equal/runner-up, not third." "Why [Pick C], if it's a less-obvious choice, made the list." Keep these honest — call out where the ranking is genuinely close vs. where one pick clearly dominates.
+
+**Data note (one short paragraph).** The model-agreement summary in plain language: which models contributed at the leading pick, where they agreed, where they didn't, and what the disagreement implies (e.g. *"EWAM and MeteoFrance agree within 10 cm on wave height; for wind, ICON-EU and ECMWF IFS agree at 4 kt ESE while GFS seamless reads 7 kt — the summary's mean averages all three equally, so trust the higher-res ICON-EU + ECMWF pair for cape-spot direction"*). Read agreement labels from the summary; do not recompute spreads in your head. Also note bundle age, single-bundle caveat (no triangulation across runs), and any guide-availability flag.
+
+**On-arrival checks** — heading, followed by 3–4 short bullets. Things the user verifies with their own eyes before paddling out. Wind angle at the cliff/cape, crowd density at the chosen peak, exit channel awareness, sandbar shape, hazards specific to the spot. These are the hedges against forecast error — they exist because no model resolves Capelada/Vixía-Herbeira topography, no model knows today's sand, and no model knows who's already out.
 
 ## What this skill does NOT do
 
@@ -351,7 +392,7 @@ Same template as `daily-surf-briefing` Step 6. Add one extra line in the data no
 - Doesn't analyze the surf log — separate question type.
 - Doesn't answer technique or fitness questions.
 - Doesn't cover NY, The Wave Bristol, or trip locations — Galicia only.
-- Doesn't run when the summary is stale or unavailable — falls back to `daily-surf-briefing`.
+- Doesn't run when the summary is stale (>30h) or both summary URLs are unreachable — exits gracefully with a clear message per Step 1.
 - Doesn't pretend GFS Wave's all-zero arrays are "flat ocean" — they're no-data, and the summary already drops them per `_meta.gfswave_ok`.
 - Doesn't pretend Esteiro de Xove has 3-model wave triangulation — it's structurally single-model (MFWAM only). Flag confidence accordingly.
 - Doesn't apply bias correction in V1. Per-spot, per-season biases (e.g. "GFS Wave overforecasts Pantín by 15%") become available when the archive directory has months of data and the user has logged felt-vs-forecast sessions. V2 scope.
@@ -367,20 +408,20 @@ Same template as `daily-surf-briefing` Step 6. Add one extra line in the data no
 - **User asks about a spot that proxies far** (e.g. Nemiña at ~80 km from Razo): include in picks if conditions clearly warrant but flag prominently as approximate proxy — local conditions may diverge meaningfully.
 - **Esteiro de Xove single-model rating:** always ●○○ for waves regardless of forecast-day spread. This is structural (EWAM grid cell mask), not a daily forecast-quality issue. Note it that way in the footnote so the user understands it won't "improve" tomorrow.
 - **Multi-day requests:** one card per day, each with its own agreement labels read from `days[date].windows[window]`. Forecast horizon caveat applies to days 2+ regardless of agreement quality.
-- **Active synoptic pattern + day 2+** (formerly a triangulation-required case in `daily-surf-briefing`): now handled by the agreement labels directly. If models disagree on a fast-developing system, the spread is bigger and `agreement` will read `"medium"` or `"low"`. No separate heuristic needed.
+- **Active synoptic pattern + day 2+:** handled by the agreement labels directly. If models disagree on a fast-developing system, the spread is bigger and `agreement` will read `"medium"` or `"low"`. No separate heuristic needed — read the labels.
 - **Spot `tide.reference_station` is far from the spot** (e.g. Pantín tide referenced to Cedeira ~5 km away; Lariño from Muros ~10 km; Esteiro from Foz ~20 km): the timing offset is small enough to ignore for coarse windows. For tight tide windows, capture the offset and adjust by a few minutes if it matters.
-- **First skill run on a brand-new repo:** the URL may 404 if no successful Actions run has happened yet. Fall back to `daily-surf-briefing` and tell the user once. After the first successful cron, this skill takes over.
+- **First skill run on a brand-new repo:** all four URLs will 404 if no successful Actions run has happened yet. Tell the user once: "Forecast data isn't published yet — kick off the GitHub Action with `gh workflow run forecast.yml` and try again in ~3 minutes." Then exit. After the first successful cron, this skill works normally.
 - **Use the dated archive URL, not a `?d=...` cache-buster on the bare URL.** Earlier versions appended `?d={YYYY-MM-DD}` to the bare summary URL to defeat caches — that fired `PERMISSIONS_ERROR` because claude.ai's allowlist treats query-stringed URLs as a different source from the bare URL. The current path-based equivalent (`archive_summary/{YYYY-MM-DD}.json`) achieves the same cache-bypass without breaking the allowlist. Empirically the `web_fetch` cache TTL inside a claude.ai session can be much longer than the advertised 5–15 min — observed at 31h+ on 2026-05-08 — so the path-based cache key is what actually keeps the bundle fresh day-to-day. The bare URL remains as a fallback for the morning-of edge case (00:00–07:00 UTC, before the morning cron lands today's archive).
 - **Default `text_content_token_limit` truncates mid-document.** Always pass an explicit `text_content_token_limit=300000` (or higher) on the `web_fetch` call. Without this, the response is clamped after ~2–3 spots and the rest of the file is silently dropped — you won't see Lariño or Esteiro de Xove.
 - **Specific-hour question:** drill into `hourly` arrays per Step 3, last bullet. The summary preserves 24-hour-per-day arrays so this works without re-fetching the raw bundle.
 
 ## Compaction rules
 
-Same as `daily-surf-briefing`:
+Always produce the full card structure, even on quiet days. Specifically:
 
 - Flat or blown out: still produce the full card with SKIP badge and three "if forced" picks.
-- One sub-coast clearly better: lead from that sub-coast; don't artificially balance.
-- Very similar to yesterday: still produce the full structure.
+- One sub-coast clearly better: lead from that sub-coast; don't artificially balance picks across sub-coasts.
+- Very similar to yesterday: still produce the full structure — don't compress to a one-liner just because nothing changed.
 - Multi-day: one card per day, chronological, stacked.
 
 ## V2 hooks (not implemented in V1)
