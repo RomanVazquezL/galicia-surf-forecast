@@ -47,15 +47,17 @@ Each spot entry has:
 - `tide_error` — string, present **only** when `tide` is empty due to a problem. Values: `"no_wisuki_mapping"` (no Wisuki ID configured for the spot), `"empty_scrape"` (Wisuki returned no parseable rows — likely an upstream HTML change), or `"<ExceptionClass>: <message>"` for raised exceptions. Sibling of `tide`, not nested inside it.
 - `_meta` — data-quality flags: `waves_ok`, `wind_ok`, `tide_ok`, plus per-wave-model flags `ewam_ok`, `gfswave_ok`, `mfwam_ok`. A model flag is `false` if the response errored or returned all null/zero values.
 
-Public bundle URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json`
+Public bundle URLs: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json` (always-current) and per-day archive at `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive/{YYYY-MM-DD}.json`.
 
-Downstream consumers append a daily cache-buster query string (e.g. `?d=2026-05-06`) to bypass aggressive caching layers. GitHub ignores the query string and serves the same file; the suffix just acts as a cache key for any CDN or HTTP cache between the consumer and `raw.githubusercontent.com`.
+Downstream consumers should fetch the **dated archive path** for the current UTC date, not the bare `today.json`. The bare URL is cached aggressively by intermediate layers — notably claude.ai's `web_fetch`, whose TTL can persist for days inside a session and was empirically observed serving a 31h-old cached bundle in May 2026. The dated archive path changes daily, so it's a fresh cache key each day. Fall back to the bare URL only when the dated archive 404s (between 00:00 UTC and the morning cron firing, when today's archive doesn't exist yet) or when the consumer's allowlist rejects path-based dated URLs.
+
+The earlier `?d=YYYY-MM-DD` query-string approach was abandoned: claude.ai's `<sources_in_this_project>` allowlist uses exact-string URL matching and rejects URLs with appended query strings. A path-based date avoids that.
 
 ### `today_summary.json` — derived per-window summary
 
 `today_summary.json` (with per-day history in `archive_summary/`) is produced by `scripts/compute_summary.py` after each `fetch.py` run. Independent versioning: its own `schema_version: 1`, separate from the bundle's. Top-level keys: `generated_at`, `source_bundle_at` (the bundle's `generated_at`), `windows` (definitions of `morning`/`afternoon`/`full_day` as local-time hour ranges), `thresholds` (script constants echoed for self-describing output), and `spots`. Per spot per day, the file emits two parallel views: hourly arrays (24 model-aggregated values per field for `{mean, spread}`) AND per-window summaries that aggregate over hours within the window — same field set, plus a categorical `agreement` label (`high`/`medium`/`low`/`single_model`/`n/a`) per field derived from spread vs threshold. Wave-model selection respects `_meta` flags from the bundle (drops models flagged as zero/null on a spot-by-spot basis). Wind speed and gusts pre-converted to knots (km/h ÷ 1.852). Direction uses circular mean (atan2 of unit vectors), spread = max angular distance from circular mean, capped at 180°. Imperial conversion is NOT done in this file — that stays in the consumer.
 
-Public summary URL: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json`
+Public summary URLs: `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json` (always-current) and per-day archive at `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json`. Same cache-busting note as `today.json` above — consumers should prefer the dated archive path.
 
 ## Spots
 

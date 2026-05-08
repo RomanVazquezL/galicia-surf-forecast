@@ -8,7 +8,7 @@ Open your Galicia surf project on claude.ai → **custom instructions** → repl
 
 This is your existing project instructions, with three small edits:
 
-- **`<sources_in_this_project>`** — forecast bundle bullet replaced with two bullets: primary `today_summary.json` (pre-computed) and Tier 1.5 fallback `today.json` (raw bundle). Listing both URLs here gives `web_fetch` permission to fetch them.
+- **`<sources_in_this_project>`** — forecast bundle bullets list three URLs: dated archive summary (primary, cache-busting), bare summary (fallback for the morning-of edge case), bare bundle (Tier 1.5 fallback when both summary URLs fail). The dated archive path is what keeps the skill reading fresh data — `web_fetch` caches by full URL, so a date-stamped path is a fresh cache key each day.
 - **`<reasoning_protocol>`** — new step inserted (between current 3 and 4) about reading pre-computed `mean` / `spread` / `agreement` from the summary directly, so ad-hoc forecast questions don't drift into in-context arithmetic.
 - **XML-tag closing typos** — `<board_selection_rules>` and `<wetsuits>` were closing with `<...>` instead of `</...>`. Fixed.
 
@@ -181,8 +181,9 @@ Analytical, calm, precise. Explicit about trade-offs and uncertainty. Structured
 
 When I ask for "analysis of my surf data," lean on the summary workbook, surface real patterns (not generic stats), and clearly distinguish observation from inference. Don't fabricate conditions data the log doesn't contain.
 </what_the_log_can_and_cannot_tell_you>
-- **Forecast summary (primary)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json`. Pre-computed per-spot, per-day, per-window aggregates with categorical model-agreement labels (`high`/`medium`/`low`/`single_model`/`n/a`). 7-day horizon. Primary input for the `multi-model-surf-briefing` skill. **Read this; do not re-aggregate.** All numeric values are metric (knots for wind); imperial conversion happens at presentation time per `<input_conventions>`.
-- **Forecast raw bundle (Tier 1.5 fallback)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json`. Multi-model raw bundle (3 wave models + 3 wind models per spot, 7-day horizon, slim/compact). Used by the skill when the summary is unreachable; aggregates inline. Also available for ad-hoc inspection.
+- **Forecast summary (primary, dated archive)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json`. Per-day archive of pre-computed per-spot, per-window aggregates with categorical model-agreement labels (`high`/`medium`/`low`/`single_model`/`n/a`). 7-day horizon. The skill substitutes today's UTC date into `{YYYY-MM-DD}` and fetches this URL first — the dated path acts as a cache-buster. **Read this; do not re-aggregate.** All numeric values are metric (knots for wind); imperial conversion happens at presentation time per `<input_conventions>`.
+- **Forecast summary (fallback, bare)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json`. Same shape as the dated archive but always-current. Used when today's archive 404s (between 00:00 UTC and the morning cron firing) or when the dated URL fails the allowlist.
+- **Forecast raw bundle (Tier 1.5 fallback)** — `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json`. Multi-model raw bundle (3 wave models + 3 wind models per spot, 7-day horizon, slim/compact). Used by the skill when both summary URLs are unreachable; aggregates inline. Bare URL is fine here — Tier 1.5 only triggers when the summary path is already broken, so cache-bypass on the bundle isn't useful.
 - Other forecast screenshots, board specs, or notes I attach over time.
 </sources_in_this_project>
 
@@ -222,10 +223,11 @@ The two URLs in `<sources_in_this_project>` above need to be reachable via `web_
 
 If your version of claude.ai also has a separate "allowed sources" / "project knowledge" / "web access" panel:
 
-- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json`
-- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json`
+- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json` (primary — dated, cache-busting)
+- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json` (fallback — bare)
+- `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json` (Tier 1.5 fallback — bare)
 
-Add both there too. Domain `raw.githubusercontent.com` should also be on any allow-list.
+Add all three there too. Domain `raw.githubusercontent.com` should also be on any allow-list. If the panel supports prefix/wildcard matching, registering the `archive_summary/` directory prefix covers all dated summary URLs without per-day updates; if it's strict exact-match, the bare summary URL alone still lets the skill operate (it'll fall back to it automatically) — you'll just lose the cache-bypass benefit and may see stale data inside long-running claude.ai sessions.
 
 ## Step 3 — verify
 
@@ -236,19 +238,26 @@ Start a **fresh chat** in this project (a fresh chat is required because URL pro
 run the briefing for tomorrow
 ```
 
-**Expected:** a multi-model briefing card with all 7 spots, no setup-required line in the footer, and a `Bundle gen ... · Xh ago` line confirming the data is fresh.
+**Expected:** a multi-model briefing card with all 7 spots, no setup-required line in the footer, no `dated archive URL not allowlisted` note, and a `Bundle gen ... · Xh ago` line where `Xh` is single-digit hours (the morning cron lands at ~07:30 UTC, the afternoon at ~15:50 UTC).
 
-**If you see** `Multi-model summary needs one-time setup. Add ... to <sources_in_this_project>`: the URL didn't take. Re-check Step 1 — make sure you saved the project instructions in claude.ai, then start another fresh chat.
+**If you see** `Multi-model summary needs one-time setup. Add ... to <sources_in_this_project>`: none of the four URLs took. Re-check Step 1 — make sure you saved the project instructions in claude.ai, then start another fresh chat.
 
-**If the skill falls back to the raw bundle** (footer says "Multi-model summary unavailable; using on-the-fly bundle aggregation"): the primary URL is blocked but the Tier 1.5 fallback works. The card still gets you all 7 spots from the raw bundle; only the model-agreement labels are approximated rather than pre-computed. Re-check that `today_summary.json` is in the project instructions; the `today.json` URL alone isn't enough.
+**If the footnote says** `dated archive URL not allowlisted — using bare summary URL`: the bare URL is registered but the dated archive URL pattern isn't. The skill still works, but `web_fetch`'s session cache may serve a stale copy. Add the `archive_summary/` URL pattern to project sources (or a directory prefix if the allowlist supports one).
+
+**If the footnote says** `today's archive not yet committed — using bare summary URL`: this is normal between 00:00 UTC and ~07:30 UTC, when today's cron hasn't run yet. The bare URL is doing the right thing here.
+
+**If the skill falls back to the raw bundle** (footer says "Multi-model summary unavailable; using on-the-fly bundle aggregation"): both summary URLs are blocked but the bundle Tier 1.5 fallback works. The card still gets you all 7 spots from the raw bundle; only the model-agreement labels are approximated rather than pre-computed. Re-check that at least one of the two summary URLs (`today_summary.json` or `archive_summary/{YYYY-MM-DD}.json`) is in the project instructions.
 
 ## What each URL is for
 
 | URL | Role | Size | Updated |
 |---|---|---|---|
-| `today_summary.json` | Primary input for the skill — pre-computed window aggregates with agreement labels | ~250 KB | Twice daily by GitHub Actions cron |
-| `today.json` | Tier 1.5 fallback — raw multi-model bundle, skill aggregates inline | ~180 KB | Same workflow run |
+| `archive_summary/{YYYY-MM-DD}.json` | Primary input — dated cache-bypass path | ~250 KB | Twice daily by GitHub Actions cron |
+| `today_summary.json` | Fallback — always-current copy of the same shape | ~250 KB | Same workflow run |
+| `today.json` | Tier 1.5 fallback — always-current raw bundle (slim) | ~180 KB | Same workflow run |
 
-Both fetch the bare URL — no `?d=...` cache-buster. claude.ai's `<sources_in_this_project>` permission check uses exact-string URL matching, so appending a query string fires `PERMISSIONS_ERROR` even when the bare URL is allowed. The skill enforces freshness by reading `source_bundle_at` inside the JSON; web_fetch's own 5–15 min cache is well within the 24h staleness threshold.
+The skill fetches the dated archive paths first because **`web_fetch` caches by full URL inside a claude.ai session, and the cache TTL can persist for days** — empirically observed serving a 31h-old bundle on 2026-05-08. A date-stamped path is a fresh cache key each day → guaranteed cache miss → fresh content. The bare URLs are kept as fallbacks for the morning-of edge case (between 00:00 UTC and the morning cron landing today's archive at ~07:30 UTC).
+
+The earlier `?d=YYYY-MM-DD` query-string approach was abandoned: claude.ai's `<sources_in_this_project>` permission check uses exact-string URL matching, so appending a query string fires `PERMISSIONS_ERROR` even when the bare URL is allowed. A path-based date avoids that.
 
 If you fork/rename the repo, update the URLs in `skills/multi-model-surf-briefing/SKILL.md` (the canonical skill body) and re-paste both into your project instructions here.

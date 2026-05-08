@@ -19,13 +19,18 @@ If the user asks about NY, The Wave Bristol, or a trip location, redirect — ne
 
 ## The summary file
 
-URL (hardcoded, easy to update if the username/repo changes):
+URL pattern (hardcoded; easy to update if the username/repo changes):
 
 ```
-https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json
+Primary:  https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json
+Fallback: https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json
 ```
 
-**Fetch the bare URL — do NOT append a `?d={YYYY-MM-DD}` cache-buster.** Earlier versions of this skill appended a cache-buster to defeat downstream HTTP caches (Cloudflare, web_fetch's internal cache). It was removed because claude.ai's `<sources_in_this_project>` permission layer uses **exact-string URL matching** against the project sources list — adding `?d=...` makes it a different string from the bare URL listed in project instructions, which fires `PERMISSIONS_ERROR` before the request ever reaches GitHub. Freshness is enforced by reading `source_bundle_at` inside the JSON (see Step 1), not by URL cache-busting. Worst case `web_fetch` serves a 5–15 minute stale cached copy, but `source_bundle_at` still reflects the underlying file's actual generation time, so the 24h / 30h staleness thresholds catch genuine issues.
+**Fetch the dated archive URL first**, where `{YYYY-MM-DD}` is **today's UTC date** (the workflow commits in UTC; using local-Madrid date will be off-by-one between 22:00–24:00 UTC). The path-based date is the cache-busting mechanism: `web_fetch` keys its cache by full URL, and a date-stamped path is a fresh key every day → guaranteed cache miss → fresh content. An earlier `?d=...` query-string variant fired `PERMISSIONS_ERROR` because claude.ai's `<sources_in_this_project>` allowlist uses **exact-string URL matching** and treats the query-stringed URL as different from the bare one. A path component avoids that, provided the user has registered the `archive_summary/` URL in project sources (one-time setup; see Step 1).
+
+**Fall back to the bare `today_summary.json` URL** if the dated path returns 404 (today's cron hasn't fired yet — the morning-of edge case, between 00:00 UTC and the morning cron landing around 07:00–08:00 UTC) or `PERMISSIONS_ERROR` (the user hasn't allowlisted the archive path yet). Note the fallback in the footnote.
+
+Freshness is cross-checked against `source_bundle_at` inside the JSON regardless of which URL succeeded — that's the authoritative timestamp. Worst case for the fallback path: `web_fetch` serves a multi-day-old cached copy (the cache TTL inside claude.ai sessions can be much longer than the 5–15 min advertised — empirically observed at 31h+ in May 2026), but `source_bundle_at` still exposes the staleness so the 24h / 30h thresholds catch it.
 
 **Pass an explicit `text_content_token_limit` on the `web_fetch` call.** The summary is ~250 KB at 7 days × 7 spots × hourly arrays + windows. The default token limit on `web_fetch` truncates mid-document — typically after 2–3 spots — leaving the rest silently dropped. Use `text_content_token_limit=300000` (or higher) to ensure the full file lands in context.
 
@@ -91,19 +96,27 @@ In practice most spots have **2 useful wave models**, not 3. Esteiro de Xove has
 
 ### Step 1 — Fetch the summary and verify freshness
 
-`web_fetch` the summary URL — the **bare** URL, no query string:
+Compute today's date in **UTC** as `{YYYY-MM-DD}`. The workflow commits to date-stamped archive paths in UTC, so use UTC, not Europe/Madrid local — they diverge for the hours between 22:00–24:00 UTC (00:00–02:00 Madrid CEST), and using local would 404 on those nights.
+
+**Primary fetch:** `web_fetch` the dated archive URL with `text_content_token_limit=300000`:
+
+```
+https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/archive_summary/{YYYY-MM-DD}.json
+```
+
+**Fallback fetch:** if the primary fails (404 or `PERMISSIONS_ERROR`), `web_fetch` the bare summary URL with the same token limit:
 
 ```
 https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json
 ```
 
-Pass `text_content_token_limit=300000` on the call so the full ~250 KB file isn't truncated. See **The summary file** section above for why both of those (bare URL and explicit token limit) matter.
+Both URLs return identical JSON shape; the only difference is the cache key. The dated path bypasses `web_fetch`'s internal cache (path-based key changes daily); the bare URL is cached aggressively but is needed as fallback when the morning cron hasn't yet committed today's archive.
 
-**Precondition for trustworthy fetch:** the summary URL must be present in this project's custom instructions (under `<sources_in_this_project>`) so claude.ai treats it as user-provided context for `web_fetch`. Without that, fresh sessions return `PERMISSIONS_ERROR` and this skill falls back to Tier 1.5 (raw bundle) per the rules below.
+**Precondition for trustworthy fetch:** at least one of the two URLs must be present in this project's `<sources_in_this_project>`. Recommended setup: register both — the archive URL pattern AND the bare summary URL. The dated path covers normal operation; the bare URL covers the morning-of edge case (00:00–07:00 UTC, before the morning cron lands today's archive).
 
-Branch on the result:
+Branch on the result of whichever fetch succeeded:
 
-**If `web_fetch` succeeds**, parse JSON. Read `source_bundle_at` (NOT `generated_at` — `generated_at` is when the summary script ran; `source_bundle_at` is when the underlying forecast was pulled, which is the actual data freshness).
+**If a fetch succeeds**, parse JSON. Read `source_bundle_at` (NOT `generated_at` — `generated_at` is when the summary script ran; `source_bundle_at` is when the underlying forecast was pulled, which is the actual data freshness).
 
 **Compute freshness in UTC.** `source_bundle_at` is an ISO-8601 UTC timestamp (suffix `Z` or `+00:00`). The system clock shown to you may be in a different timezone — Madrid is UTC+1 (CET) or UTC+2 (CEST). Convert system local to UTC before subtracting, or pull `now_utc` directly. Example: a bundle generated at `2026-05-07T00:14:58Z`, queried at 06:14 Madrid local on 2026-05-07, is `06:14 − 02:00 (CEST offset) − 00:14:58 = ~4 hours` old, not ~12 hours. A common error mode is to read the system clock as if it were UTC and overestimate the age by the timezone offset; sanity-check before writing the footnote.
 
@@ -115,15 +128,17 @@ Three cases:
 
 > **Note:** with `forecast_days=7` in the bundle, a 24-hour-old summary still has 6 fresh days ahead — even if the cron missed once, day-1 through day-5 forecasts remain inside the bundle's horizon. Don't over-trigger the stale fallback for normal cron-skip cases.
 
-**If `web_fetch` returns `PERMISSIONS_ERROR`** on the summary URL — the URL isn't in this project's allowed sources, OR you appended a query string and the exact-match permission check is rejecting it. **First, double-check you fetched the bare URL** (no `?d=...`, no other query string). If you did and it still fails, output ONE short setup-required message and proceed to Tier 1.5 (do not stop the turn):
+**If the primary (dated archive) fetch returns `PERMISSIONS_ERROR` but the fallback (bare URL) succeeds**, the user has allowlisted only the bare URL. Proceed normally with the fallback data, and add a one-line note in the footnote: `dated archive URL not allowlisted — using bare summary URL (cache may serve stale content)`. This nudges the user to add the archive URL to project sources without blocking the briefing.
 
-> Multi-model summary needs one-time setup. Add `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json` to `<sources_in_this_project>` in this project's custom instructions. See `docs/SKILL_SETUP.md`. Falling back to the raw bundle for now.
+**If the primary returns 404 but the fallback succeeds**, today's morning cron hasn't committed yet (most likely between 00:00 UTC and ~07:30 UTC, when the morning run lands). Proceed normally with the fallback data, and add a footnote line: `today's archive not yet committed — using bare summary URL (last cron ~XhYm ago)`. The `source_bundle_at` check still catches genuine staleness.
 
-This message will fire every session that hits `PERMISSIONS_ERROR` until the user adds the URL — skills don't have cross-session state, so "fires until setup is done" is the contract. It is **distinct** from per-session paste prompts (which were removed) — the user's action here is one-time and persistent.
+**If both fetches fail** (both return `PERMISSIONS_ERROR`, or both return 404/network error), output ONE short setup-required message and proceed to Tier 1.5 (do not stop the turn):
 
-**If `web_fetch` returns 404, network error, or JSON parse error** on the summary → fall back silently to Tier 1.5. No setup message; the URL is fine, the file is just unreachable for transient reasons.
+> Multi-model summary needs one-time setup. Add `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today_summary.json` (and ideally the `archive_summary/` path for cache-bypass) to `<sources_in_this_project>` in this project's custom instructions. See `docs/SKILL_SETUP.md`. Falling back to the raw bundle for now.
 
-**Tier 1.5 fallback — raw bundle (`today.json`).** When the summary is unreachable: `web_fetch` the **bare** bundle URL `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json` (no `?d=...` cache-buster — same exact-match permission rule applies). Pass `text_content_token_limit=300000` here too — the slim bundle is ~180 KB and gets truncated by default. If that succeeds, parse and run inline aggregation per Step 5b. The bundle's footnote MUST flag: "Multi-model summary unavailable; using on-the-fly bundle aggregation. Confidence labels approximated from cross-model spread; not pre-computed."
+This message will fire every session that hits `PERMISSIONS_ERROR` on both URLs until the user adds at least one — skills don't have cross-session state, so "fires until setup is done" is the contract. It is **distinct** from per-session paste prompts (which were removed) — the user's action here is one-time and persistent.
+
+**Tier 1.5 fallback — raw bundle (`today.json`).** When both summary fetches are unreachable, `web_fetch` the bare bundle URL `https://raw.githubusercontent.com/RomanVazquezL/galicia-surf-forecast/main/today.json` with `text_content_token_limit=300000` (the slim bundle is ~180 KB and gets truncated by default). The bare URL is fine here — Tier 1.5 only triggers on `PERMISSIONS_ERROR` / 404, which means the summary path is broken regardless of cache. Stale-cache risk on the bundle is a non-issue because freshness is still cross-checked against the bundle's `generated_at`. If a dated archive bundle is needed for ad-hoc historical inspection, see `archive/{YYYY-MM-DD}.json` in the repo. If the fetch succeeds, parse and run inline aggregation per Step 5b. The footnote MUST flag: "Multi-model summary unavailable; using on-the-fly bundle aggregation. Confidence labels approximated from cross-model spread; not pre-computed."
 
 If `today.json` is also unreachable (rare — the user typically has it in project sources), or the requested date is outside the bundle's horizon (`forecast_days` from `source_bundle_at`), proceed to Tier 2.
 
@@ -355,7 +370,7 @@ Same template as `daily-surf-briefing` Step 6. Add one extra line in the data no
 - **Active synoptic pattern + day 2+** (formerly a triangulation-required case in `daily-surf-briefing`): now handled by the agreement labels directly. If models disagree on a fast-developing system, the spread is bigger and `agreement` will read `"medium"` or `"low"`. No separate heuristic needed.
 - **Spot `tide.reference_station` is far from the spot** (e.g. Pantín tide referenced to Cedeira ~5 km away; Lariño from Muros ~10 km; Esteiro from Foz ~20 km): the timing offset is small enough to ignore for coarse windows. For tight tide windows, capture the offset and adjust by a few minutes if it matters.
 - **First skill run on a brand-new repo:** the URL may 404 if no successful Actions run has happened yet. Fall back to `daily-surf-briefing` and tell the user once. After the first successful cron, this skill takes over.
-- **Do NOT add a `?d=...` cache-buster.** Earlier versions of this skill appended one to defeat downstream caches. It was removed because claude.ai's `<sources_in_this_project>` permission layer uses exact-string URL matching — appending a query string fires `PERMISSIONS_ERROR` before the request reaches GitHub, even though the URL host+path matches. Freshness is enforced by reading `source_bundle_at` inside the JSON; that's unaffected by web_fetch's cache (which has a 5–15 min TTL — much smaller than the 24h staleness threshold).
+- **Use the dated archive URL, not a `?d=...` cache-buster on the bare URL.** Earlier versions appended `?d={YYYY-MM-DD}` to the bare summary URL to defeat caches — that fired `PERMISSIONS_ERROR` because claude.ai's allowlist treats query-stringed URLs as a different source from the bare URL. The current path-based equivalent (`archive_summary/{YYYY-MM-DD}.json`) achieves the same cache-bypass without breaking the allowlist. Empirically the `web_fetch` cache TTL inside a claude.ai session can be much longer than the advertised 5–15 min — observed at 31h+ on 2026-05-08 — so the path-based cache key is what actually keeps the bundle fresh day-to-day. The bare URL remains as a fallback for the morning-of edge case (00:00–07:00 UTC, before the morning cron lands today's archive).
 - **Default `text_content_token_limit` truncates mid-document.** Always pass an explicit `text_content_token_limit=300000` (or higher) on the `web_fetch` call. Without this, the response is clamped after ~2–3 spots and the rest of the file is silently dropped — you won't see Lariño or Esteiro de Xove.
 - **Specific-hour question:** drill into `hourly` arrays per Step 3, last bullet. The summary preserves 24-hour-per-day arrays so this works without re-fetching the raw bundle.
 
